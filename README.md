@@ -8,6 +8,7 @@ against the 28.0M left after the cheapest legal bench. The problem is therefore 
 *per euro* under the squad rules, not just picking good players.
 
 - `doc/results.md` — what the latest iteration changed, and what it measured
+- `doc/todo.md` — what is left: the optimizer, reporting, and player exclusions
 - `doc/plan.md` — the approach, phase by phase, and what is done so far
 - `doc/heuristic.md` — a hand-built baseline squad, and the number the optimizer has to beat
 - `doc/rules.md`, `doc/faq.md` — the game rules this all derives from
@@ -106,6 +107,27 @@ plays 27.9 matches a season and his deputy 4.0, so the projection is
 `P(number one | within-club price rank) × points of a number one`. Among the 49 number ones in the
 panel, points correlate with price at −0.03 — so the rule is to buy the *cheapest* clear number one,
 not the best keeper.
+
+### Excluding a player
+
+When news breaks that the data cannot know — a season-ending injury, a transfer out of the league —
+drop the player from the pool without editing anything:
+
+```bash
+KICKER_EXCLUDED_PLAYERS='["Kobel"]' uv run python -c "..."
+KICKER_EXCLUDED_PLAYERS='["pl-k00030669", "Ramaj"]' ...   # ids and names may be mixed
+```
+
+Entries are a `player_id` or a case-insensitive part of a name. A name that matches **no** player,
+or **more than one**, is an error rather than a silent no-op — the point of the setting is to be
+sure the player cannot be bought. Exclusions apply to the pool only, never to the seasons the model
+is fitted on.
+
+Note that excluding a club's first-choice goalkeeper promotes his deputy to price rank 1, and so to
+a first-choice projection. That is deliberate: an injured number one really does make his deputy the
+number one.
+
+### Other settings
 
 Quotas take JSON, which is how to try a formation other than 4-4-2:
 

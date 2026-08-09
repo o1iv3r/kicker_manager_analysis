@@ -217,6 +217,69 @@ def _reject_invalid_rows(players: pl.DataFrame, source: str) -> None:
         )
 
 
+def resolve_player(players: pl.DataFrame, reference: str) -> str:
+    """Resolve one id-or-name reference to exactly one player id.
+
+    Args:
+        players: Canonical player frame to search.
+        reference: A ``player_id``, matched exactly, or part of a name, matched case-insensitively.
+
+    Returns:
+        The matching ``player_id``.
+
+    Raises:
+        ValueError: If the reference matches no player, or more than one. Both are mistakes worth
+            stopping for — a reference that quietly matches nothing would leave a player in the
+            pool that the caller believes they removed.
+    """
+    if players.filter(pl.col("player_id") == reference).height == 1:
+        return reference
+
+    matches = players.filter(
+        pl.col("name").str.to_lowercase().str.contains(reference.lower(), literal=True)
+    )
+    if matches.height == 1:
+        return str(matches.get_column("player_id").item())
+    if matches.is_empty():
+        raise ValueError(f"{reference!r} matches no player in the pool")
+
+    candidates = ", ".join(
+        f"{name} ({club}, {player_id})"
+        for player_id, name, club in matches.select("player_id", "name", "club").head(6).iter_rows()
+    )
+    raise ValueError(f"{reference!r} matches {matches.height} players: {candidates}")
+
+
+def apply_exclusions(players: pl.DataFrame, settings: Settings) -> pl.DataFrame:
+    """Drop the players named in ``settings.excluded_players`` from the pool.
+
+    This applies to the **pool only**, never to the fitting panel: a player being injured for the
+    season to come says nothing about the seasons already played, and removing him from those
+    would bias the curve and the goalkeeper probabilities for no reason.
+
+    It also runs *before* :func:`validate_pool` and before any ranking, so that exclusions which
+    make the pool unable to field a legal squad fail as a validation error, and so that excluding
+    a club's number one promotes his deputy to price rank 1 — which is what an injury actually
+    does to that club's team sheet.
+
+    Args:
+        players: Canonical player frame.
+        settings: Supplies the references to exclude.
+
+    Returns:
+        The frame without the excluded players.
+
+    Raises:
+        ValueError: If any reference matches no player or several.
+    """
+    if not settings.excluded_players:
+        return players
+    excluded = {
+        resolve_player(players, reference) for reference in sorted(settings.excluded_players)
+    }
+    return players.filter(~pl.col("player_id").is_in(excluded))
+
+
 def validate_pool(players: pl.DataFrame, settings: Settings) -> None:
     """Check that the pool could produce a legal squad at all.
 
@@ -453,14 +516,18 @@ def load_panel(data_dir: Path) -> pl.DataFrame:
 
 
 def load_latest_players(settings: Settings) -> pl.DataFrame:
-    """Load and validate the newest export in the configured data directory.
+    """Load the newest export, drop any excluded players, and validate what remains.
 
     Args:
-        settings: Supplies the data directory and the rules to validate against.
+        settings: Supplies the data directory, the exclusions, and the rules to validate against.
 
     Returns:
-        The validated canonical player frame.
+        The validated canonical player frame, ready to project and solve against.
+
+    Raises:
+        ValueError: If an exclusion does not resolve, or the surviving pool cannot field a legal
+            squad.
     """
-    players = load_players(latest_export(settings.data_dir))
+    players = apply_exclusions(load_players(latest_export(settings.data_dir)), settings)
     validate_pool(players, settings)
     return players

@@ -350,6 +350,32 @@ def test_goalkeepers_take_the_step_model_not_the_curve() -> None:
     )
 
 
+def test_excluding_a_number_one_promotes_his_deputy() -> None:
+    """An injured first-choice keeper really does make his deputy the club's number one.
+
+    Exclusions are applied to the pool before the rank is computed, so this follows. It is the
+    behaviour the injury case wants, and the reason the ordering is not an implementation detail.
+    """
+    settings = Settings(data_dir=REPO_ROOT / "data")
+    pool = load_latest_players(settings)
+    keepers = with_keeper_rank(pool).filter(pl.col("position") == Position.GOALKEEPER.value)
+    number_one = keepers.filter(pl.col("keeper_rank") == 1).sort("market_value").row(0, named=True)
+    deputy = keepers.filter(
+        (pl.col("club") == number_one["club"]) & (pl.col("keeper_rank") == 2)
+    ).row(0, named=True)
+
+    without = load_latest_players(
+        Settings(data_dir=REPO_ROOT / "data", excluded_players={number_one["player_id"]})
+    )
+    assert number_one["player_id"] not in without.get_column("player_id").to_list()
+    promoted = (
+        with_keeper_rank(without)
+        .filter(pl.col("player_id") == deputy["player_id"])
+        .row(0, named=True)
+    )
+    assert promoted["keeper_rank"] == 1
+
+
 def test_real_panel_number_one_keepers_dominate() -> None:
     """The step the model rests on has to be present in the committed data.
 

@@ -20,8 +20,10 @@ from kicker_manager_analysis.data import (
     MAX_PLAUSIBLE_MARKET_VALUE,
     UNPURCHASABLE_MARKET_VALUE,
     all_exports,
+    apply_exclusions,
     export_date,
     latest_export,
+    load_latest_players,
     load_panel,
     load_players,
     load_season,
@@ -200,6 +202,43 @@ def test_load_players_rejects_an_unrecognised_sentinel(tmp_path: Path) -> None:
     rows = [*build_rows(), export_row(90, "Club 0", "FORWARD", 888_000_000)]
     with pytest.raises(ValueError, match="unhandled sentinel"):
         load_players(write_export(tmp_path, "2026_08_09", rows))
+
+
+def test_exclusions_default_to_nothing(sample_export: Path) -> None:
+    """An unset exclusion list must leave the pool untouched."""
+    players = load_players(sample_export)
+    assert apply_exclusions(players, Settings()).height == players.height
+
+
+def test_exclusion_by_id_and_by_name(sample_export: Path) -> None:
+    """Either form identifies a player; the name form is case-insensitive."""
+    players = load_players(sample_export)
+    by_id = apply_exclusions(players, Settings(excluded_players={"pl-k00000"}))
+    by_name = apply_exclusions(players, Settings(excluded_players={"name 0"}))
+    assert "pl-k00000" not in by_id.get_column("player_id").to_list()
+    assert by_id.height == players.height - 1
+    assert by_name.get_column("player_id").to_list() == by_id.get_column("player_id").to_list()
+
+
+def test_exclusion_matching_nothing_raises(sample_export: Path) -> None:
+    """The dangerous failure is a silent no-op: the caller thinks the player is gone."""
+    with pytest.raises(ValueError, match="matches no player"):
+        apply_exclusions(load_players(sample_export), Settings(excluded_players={"Lewandowski"}))
+
+
+def test_ambiguous_exclusion_raises_and_names_candidates(sample_export: Path) -> None:
+    """'Name 1' also matches 'Name 10'; guessing between them would be worse than stopping."""
+    with pytest.raises(ValueError, match=r"matches \d+ players"):
+        apply_exclusions(load_players(sample_export), Settings(excluded_players={"Name 1"}))
+
+
+def test_exclusions_are_validated_against_the_squad_quota(tmp_path: Path) -> None:
+    """Excluding too many of a position must fail as validation, not as an infeasible solve."""
+    path = write_export(tmp_path, "2026_08_09", build_rows())
+    settings = Settings(data_dir=tmp_path, excluded_players={f"pl-k{n:05d}" for n in range(3)})
+    with pytest.raises(ValueError, match="cannot fill the squad quota"):
+        load_latest_players(settings)
+    assert path.exists()
 
 
 def test_season_of_reads_the_year(tmp_path: Path) -> None:

@@ -44,6 +44,18 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     budget: int = Field(default=BUNDESLIGA_BUDGET, gt=0)
     club_cap: int = Field(default=3, gt=0)
+    excluded_players: frozenset[str] = frozenset()
+    """Players to drop from the pool before anything is fitted against it or solved.
+
+    For news the data cannot know: a season-ending injury, a transfer out of the league, a
+    suspension. Each entry is either a ``player_id`` or a case-insensitive part of a name, and an
+    entry matching no player — or more than one — is an error rather than a silent no-op, since
+    the whole point is to be sure the player cannot be bought.
+
+    Excluding a club's first-choice goalkeeper promotes his deputy to price rank 1, which is the
+    right behaviour for the injury case that motivates this field. See
+    :func:`~.data.apply_exclusions`.
+    """
     bench_weight: float = Field(default=0.0, ge=0.0, le=1.0)
     residual_weight: float | None = Field(default=None, ge=0.0, le=1.0)
     """Override for how far last season is trusted over the market's forecast of the next one.
