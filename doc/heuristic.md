@@ -3,7 +3,7 @@
 A hand-built squad to measure the optimizer against, derived from section 4 of
 `notebooks/projection.py`. Any solver output that cannot beat this is not earning its keep.
 
-> **Superseded, and its numbers are stale.** This was written before the JSON panel and the
+> **Superseded by `doc/squad.md`, and its numbers are stale.** This was written before the JSON panel and the
 > goalkeeper step model landed, so every projection below comes from a model the repo no longer
 > uses. Under the current projection the same fifteen players score **968.2**, not 1128 — and
 > Backhaus is now ranked Freiburg's *number two*, because the club prices him and Atubolu
@@ -143,5 +143,7 @@ that cheaper keeper frees on outfield players, and the same +10.6 of midfield re
 term is a data-and-tie-break artefact rather than a better decision, and it is the largest number
 on this page — which is the honest measure of how much of the answer rests on the goalkeeper rank.
 
-See `doc/plan.md` (Phase 5) for the solve and `doc/todo.md` §2 for why this makes the
-selection-frequency report the deliverable rather than a single squad.
+**`doc/squad.md` is the successor to this page** — the squad the optimizer actually returns, which
+of its fifteen names the model chooses and which are free, and the goalkeeper evidence problem that
+turns out to sit underneath all of it. See `doc/plan.md` (Phase 5) for the solve and `doc/todo.md`
+§2 for why this makes the selection-frequency report the deliverable rather than a single squad.
