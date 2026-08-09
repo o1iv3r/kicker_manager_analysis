@@ -8,6 +8,7 @@ against the 28.0M left after the cheapest legal bench. The problem is therefore 
 *per euro* under the squad rules, not just picking good players.
 
 - `doc/plan.md` — the approach, phase by phase, and what is done so far
+- `doc/heuristic.md` — a hand-built baseline squad, and the number the optimizer has to beat
 - `doc/rules.md`, `doc/faq.md` — the game rules this all derives from
 
 ## Setup
