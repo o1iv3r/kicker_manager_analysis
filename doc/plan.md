@@ -52,13 +52,22 @@ re-exported later, so the loader must select the newest `data/*_spieler_daten.cs
 
 **What is missing is the denominator.** The export has season point *totals* but no appearances, so
 `Punkte ÷ Spiele` — the statistic named in the request — cannot be computed from this file alone.
-Two further gaps:
+Phase 2 confirmed this is not recoverable by arithmetic either: grade points are linear, so
+`points = 4·starts + 2·subs + n·f(mean grade) + extras`, and inverting it fails outright. At a grade
+of 4.5 the per-appearance rate is `4 − 4 = 0`, so the points total carries *no* information about how
+often the player featured; below 4.5 the implied count goes negative, and goals/assists/bonuses bias
+it upward besides. A quarter of graded players imply more than a 34-match season. Appearances must be
+ingested externally. Two further gaps:
 
-- **224 of 549 players (41%) have 0 points**: promoted-club players, new signings from abroad, and
-  genuine non-players are indistinguishable in this file. A zero here does not mean "bad".
-- Column semantics need confirming before they are trusted. `Notendurchschnitt` looks like an average
-  kicker grade (Kane 2.32, Neuer 3.18), but Ulreich shows 15 points at an average of 1.5, which does
-  not reconcile cleanly with the scoring table. Resolve this in EDA before building on it.
+- **224 of 549 players (41%) have 0 points**, and Phase 2 EDA shows the cohort is dominated by the
+  three promoted clubs — Paderborn 97%, Elversberg 96%, Schalke 94% — which contribute 89 of the 224.
+  Those players have **no** Bundesliga history rather than a bad one. The rest scatter at 11-43%
+  across established clubs (fringe players, new signings). A zero here does not mean "bad", and the
+  cohort reaches 4.5M in market value, so it cannot be discarded.
+- `Notendurchschnitt` is confirmed (Phase 2 EDA) as the mean kicker grade: non-zero values span
+  1.5-5.0 with mean 3.57. **`0.0` is a sentinel for "never graded", not a grade** — 244 players carry
+  it, and feeding it to the scoring formula would imply `(3.5 − 0) × 4 = +14` points per appearance,
+  better than a perfect 1.0. The projection must mask it rather than treat the column as numeric.
 
 Appearance data must therefore be ingested separately, from kicker.de player pages (same data universe,
 so grades and points reconcile against the export — preferred), with openligadb as a cross-check and
@@ -167,6 +176,9 @@ emits the recommended XI plus the four fillers, with cost, projected points, and
 
 ## Open items to confirm during implementation
 
-- Which season `Punkte` / `Notendurchschnitt` describe, and the Ulreich reconciliation anomaly.
+- ~~The Ulreich reconciliation anomaly~~ — resolved in Phase 2: one start (4) + a 1.5 grade (8) +
+  player of the match (3) = 15 exactly. The export is consistent with `scoring.py`.
+- Which season `Punkte` / `Notendurchschnitt` describe. The magnitudes fit a full prior season
+  (Kane 407 over ~34 matches), but the file itself does not state it.
 - Whether kicker.de player pages expose appearances in a stable, scrapeable form; if not, Phase 4 falls
   back to openligadb lineups.

@@ -2,6 +2,7 @@
 name = "kicker-manager-analysis"
 version = "0.1.0"
 description = "Optimal squad selection for the kicker-Managerspiel Classic (Bundesliga)."
+readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "polars>=1.17",
@@ -35,6 +36,11 @@ select = ["A", "B", "C4", "D", "E", "F", "I", "N", "RUF", "SIM", "UP", "W"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# marimo stores notebooks as plain modules: cells are undocumented functions whose trailing
+# bare expression is the rendered output, and marimo rewrites their signatures on save.
+"notebooks/*.py" = ["B018", "D100", "D103", "F811"]
 
 [tool.mypy]
 files = ["src", "tests"]
