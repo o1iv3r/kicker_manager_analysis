@@ -216,3 +216,25 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Host and tooling config that surfaces inside the working directory
+#   These are not project files. The dev container mounts the user's shell, editor and tooling
+#   config into the repository root, where they appear as empty files and get swept into any
+#   `git add -A`. Twenty-two of them were committed that way in ee49638 as zero-byte blobs.
+#   None carries content here, so nothing leaked, but they produce spurious diffs whenever the
+#   mounts differ between machines.
+#
+#   If any of these ever becomes a real project file — a shared .claude/settings.json, or a
+#   .gitmodules written by `git submodule add` — it needs `git add -f` to get past this block.
+.bash_profile
+.bashrc
+.profile
+.zprofile
+.zshrc
+.gitconfig
+.gitmodules
+.ripgreprc
+.mcp.json
+.claude/
+.idea
+.vscode
