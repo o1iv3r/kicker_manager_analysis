@@ -9,8 +9,14 @@ import pytest
 from conftest import REPO_ROOT, build_rows, export_row, write_export
 from kicker_manager_analysis.config import Settings
 from kicker_manager_analysis.data import (
+    MAX_PLAUSIBLE_MARKET_VALUE,
+    UNPURCHASABLE_MARKET_VALUE,
+    all_exports,
     export_date,
+    export_season,
+    is_repriced_repeat,
     latest_export,
+    load_panel,
     load_players,
     minimum_squad_cost,
     validate_pool,
@@ -149,3 +155,91 @@ def test_real_export_loads_and_validates() -> None:
     players = load_players(latest_export(settings.data_dir))
     validate_pool(players, settings)
     assert players.height > 0
+
+
+def test_export_date_accepts_a_year_only_stamp(tmp_path: Path) -> None:
+    """The historical exports carry only a year, and must not be rejected as unparseable."""
+    assert export_date(tmp_path / "2023_spieler_daten.csv") == date(2023, 1, 1)
+    assert export_season(tmp_path / "2023_spieler_daten.csv") == 2023
+    assert export_season(tmp_path / "2026_08_09_spieler_daten.csv") == 2026
+
+
+def test_all_exports_orders_mixed_stamp_forms(tmp_path: Path) -> None:
+    """A year-only export sorts ahead of a dated one from the same year."""
+    write_export(tmp_path, "2026_08_09", build_rows())
+    write_export(tmp_path, "2024", build_rows())
+    write_export(tmp_path, "2026", build_rows())
+    assert [path.name for path in all_exports(tmp_path)] == [
+        "2024_spieler_daten.csv",
+        "2026_spieler_daten.csv",
+        "2026_08_09_spieler_daten.csv",
+    ]
+
+
+def test_load_players_drops_the_unpurchasable_sentinel(tmp_path: Path) -> None:
+    """999M is a marker for a player who cannot be bought, not a valuation."""
+    rows = [
+        *build_rows(),
+        export_row(90, "Club 0", "FORWARD", UNPURCHASABLE_MARKET_VALUE),
+        export_row(91, "Club 1", "GOALKEEPER", UNPURCHASABLE_MARKET_VALUE),
+    ]
+    players = load_players(write_export(tmp_path, "2026_08_09", rows))
+    assert players.height == 25
+    assert players.get_column("market_value").to_numpy().max() < MAX_PLAUSIBLE_MARKET_VALUE
+
+
+def test_load_players_rejects_an_unrecognised_sentinel(tmp_path: Path) -> None:
+    """A different out-of-range marker must fail loudly rather than skew a regression."""
+    rows = [*build_rows(), export_row(90, "Club 0", "FORWARD", 888_000_000)]
+    with pytest.raises(ValueError, match="unhandled sentinel"):
+        load_players(write_export(tmp_path, "2026_08_09", rows))
+
+
+def test_is_repriced_repeat_separates_a_new_season_from_a_repricing(tmp_path: Path) -> None:
+    """An export taken before kickoff repeats the finished season's points against new prices."""
+    played = [
+        export_row(n, f"Club {n % 6}", "MIDFIELDER", 1_000_000, points=10 * n, grade_average=3.0)
+        for n in range(10)
+    ]
+    repriced = [
+        export_row(n, f"Club {n % 6}", "MIDFIELDER", 2_000_000, points=10 * n, grade_average=3.0)
+        for n in range(10)
+    ]
+    next_season = [
+        export_row(n, f"Club {n % 6}", "MIDFIELDER", 2_000_000, points=7 * n + 3, grade_average=2.8)
+        for n in range(10)
+    ]
+    first = load_players(write_export(tmp_path, "2024", played))
+    assert is_repriced_repeat(load_players(write_export(tmp_path, "2025", repriced)), first)
+    assert not is_repriced_repeat(load_players(write_export(tmp_path, "2026", next_season)), first)
+
+
+def test_load_panel_excludes_a_repricing_and_labels_seasons(tmp_path: Path) -> None:
+    """Only exports whose points describe their own season may be trained on."""
+    season_a = [
+        export_row(n, f"Club {n % 6}", "MIDFIELDER", 1_000_000, points=10 * n, grade_average=3.0)
+        for n in range(10)
+    ]
+    season_b = [
+        export_row(n, f"Club {n % 6}", "MIDFIELDER", 1_500_000, points=4 * n + 9, grade_average=2.5)
+        for n in range(10)
+    ]
+    repriced_b = [
+        export_row(n, f"Club {n % 6}", "MIDFIELDER", 2_000_000, points=4 * n + 9, grade_average=2.5)
+        for n in range(10)
+    ]
+    write_export(tmp_path, "2024", season_a)
+    write_export(tmp_path, "2025", season_b)
+    write_export(tmp_path, "2026_08_09", repriced_b)
+
+    panel = load_panel(tmp_path)
+    assert panel.get_column("season").unique().sort().to_list() == [2024, 2025]
+    assert panel.height == 20
+
+
+def test_real_panel_covers_three_seasons() -> None:
+    """The committed exports yield three usable seasons; the 2026 file is a repricing."""
+    panel = load_panel(REPO_ROOT / "data")
+    assert panel.get_column("season").unique().sort().to_list() == [2023, 2024, 2025]
+    assert panel.height == 1380
+    assert panel.get_column("market_value").to_numpy().max() <= MAX_PLAUSIBLE_MARKET_VALUE
