@@ -7,6 +7,7 @@ The budget is what makes this hard: a best XI picked purely on last season's poi
 against the 28.0M left after the cheapest legal bench. The problem is therefore expected points
 *per euro* under the squad rules, not just picking good players.
 
+- `doc/results.md` — what the latest iteration changed, and what it measured
 - `doc/plan.md` — the approach, phase by phase, and what is done so far
 - `doc/heuristic.md` — a hand-built baseline squad, and the number the optimizer has to beat
 - `doc/rules.md`, `doc/faq.md` — the game rules this all derives from

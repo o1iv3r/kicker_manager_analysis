@@ -362,9 +362,9 @@ branch carrying the small remainder. Fitted on all three seasons it gives:
 
 | quantity | value |
 |---|---|
-| P(≥17 appearances \| rank 1) | **0.86** |
-| P(≥17 appearances \| rank 2) | 0.06 |
-| P(≥17 appearances \| rank 3+) | 0.02 |
+| P(≥17 appearances \| rank 1) | **0.88** (43 of 49) |
+| P(≥17 appearances \| rank 2) | 0.08 (4 of 49) |
+| P(≥17 appearances \| rank 3+) | 0.03 (2 of 70) |
 | points of a number one | 174.5 + 6.8 × M |
 | points of a deputy | 11.9 |
 
