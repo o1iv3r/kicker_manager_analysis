@@ -39,8 +39,9 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 # marimo stores notebooks as plain modules: cells are undocumented functions whose trailing
-# bare expression is the rendered output, and marimo rewrites their signatures on save.
-"notebooks/*.py" = ["B018", "D100", "D103", "F811"]
+# bare expression is the rendered output, and marimo rewrites their signatures on save. Cell
+# parameters are names another cell exported, so constants and classes keep their own casing.
+"notebooks/*.py" = ["B018", "D100", "D103", "F811", "N803"]
 
 [tool.mypy]
 files = ["src", "tests"]

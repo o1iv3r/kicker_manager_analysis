@@ -30,8 +30,10 @@ against the exact pool it used. Exports are committed to the repo for that reaso
 
 ## Notebooks
 
-Exploratory work uses [marimo](https://marimo.io), not Jupyter. `notebooks/eda.py` establishes what
-the export's columns actually mean.
+Exploratory work uses [marimo](https://marimo.io), not Jupyter.
+
+- `notebooks/eda.py` — what the export's columns actually mean
+- `notebooks/projection.py` — how the market curve is fitted, and how much the answer moves
 
 ```bash
 uv run marimo edit notebooks/eda.py   # interactive editor (starts a local server, opens a browser)
@@ -64,7 +66,13 @@ Bundesliga variant. Any field can be overridden with a `KICKER_`-prefixed enviro
 ```bash
 KICKER_BUDGET=7500000 uv run pytest          # 2. Bundesliga budget
 KICKER_BENCH_WEIGHT=0.25 uv run pytest       # stop treating the bench as worthless
+KICKER_RESIDUAL_WEIGHT=1.0 uv run pytest     # trust last season fully over the market curve
 ```
+
+`residual_weight` is the one worth knowing about. The projection is
+`curve + residual_weight × (last season − curve)`, so 0 trusts the kicker market values alone and 1
+trusts last season's points alone. It cannot be estimated from a single export, and it changes 5 of
+the top 11 players — `notebooks/projection.py` shows the sensitivity.
 
 Quotas take JSON, which is how to try a formation other than 4-4-2:
 
@@ -84,9 +92,9 @@ constraint costs, and for testing the optimizer against small pools.)
 | `src/kicker_manager_analysis/scoring.py` | the kicker scoring rules and the `Position` enum |
 | `src/kicker_manager_analysis/config.py` | `Settings`: budget, quotas, club cap, bench weight |
 | `src/kicker_manager_analysis/data.py` | export discovery, loading, schema and pool validation |
+| `src/kicker_manager_analysis/projection.py` | the market curve and expected season points per player |
 | `notebooks/` | marimo notebooks |
 | `tests/` | pytest suite, including one test that loads the real committed export |
 | `data/` | date-stamped player exports |
 
-Projection, optimization and reporting modules are not built yet; see `doc/plan.md` for what lands
-where.
+Optimization and reporting modules are not built yet; see `doc/plan.md` for what lands where.
