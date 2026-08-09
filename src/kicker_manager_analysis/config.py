@@ -31,22 +31,6 @@ LINEUP_QUOTA: Final[dict[Position, int]] = {
 }
 """The fixed 4-4-2 formation; the difference to the squad quota is the bench."""
 
-DEFAULT_RESIDUAL_WEIGHT: Final = 0.5
-"""How far a player's last season is trusted over the market's forecast of his next one.
-
-Not identifiable from a single export: separating the persistent part of a player's over- or
-under-performance from one season of luck needs a second season, or the appearance counts of
-Phase 4. Splitting the difference is a deliberate placeholder, and the value the projection is
-most sensitive to — ``notebooks/projection.py`` plots the sensitivity.
-"""
-
-DEFAULT_NEW_CLUB_THRESHOLD: Final = 0.25
-"""Share of a squad with league history below which the club counts as newly promoted.
-
-The three promoted clubs in the 2026-08-09 export sit at 3-6% and every established club above
-57%, so anything inside that gap separates them; the midpoint is chosen for margin on both sides.
-"""
-
 
 class Settings(BaseSettings):
     """Rules and paths that define one optimization run.
@@ -61,8 +45,12 @@ class Settings(BaseSettings):
     budget: int = Field(default=BUNDESLIGA_BUDGET, gt=0)
     club_cap: int = Field(default=3, gt=0)
     bench_weight: float = Field(default=0.0, ge=0.0, le=1.0)
-    residual_weight: float = Field(default=DEFAULT_RESIDUAL_WEIGHT, ge=0.0, le=1.0)
-    new_club_threshold: float = Field(default=DEFAULT_NEW_CLUB_THRESHOLD, gt=0.0, lt=1.0)
+    residual_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+    """Override for how far last season is trusted over the market's forecast of the next one.
+
+    Left unset, the weight is *measured* from the panel per position — the panel exists precisely
+    so this does not have to be guessed. Set it only to explore how the answer moves.
+    """
     squad_quota: dict[Position, int] = Field(default_factory=lambda: dict(SQUAD_QUOTA))
     lineup_quota: dict[Position, int] = Field(default_factory=lambda: dict(LINEUP_QUOTA))
 

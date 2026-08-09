@@ -24,9 +24,16 @@ The player pool comes from the game itself: open the Managerspiel in a browser, 
 **Transfermarkt**, and use the **Spieler-Daten-Export** link at the bottom right to download the
 CSV.
 
-Save it to `data/` named `YYYY_MM_DD_spieler_daten.csv`. The date stamp matters — the loader picks
-the newest file automatically, so old exports can stay in place and any run can be reproduced
-against the exact pool it used. Exports are committed to the repo for that reason.
+Save it to `data/` named `YYYY_MM_DD_spieler_daten.csv` (the historical files carry only a year).
+The stamp matters — the loader picks the newest file automatically, so old exports can stay in
+place and any run can be reproduced against the exact pool it used. Exports are committed to the
+repo for that reason.
+
+Old exports are not just archive. Each file's club list gives the squads for the season ahead
+while its points give the season just finished, so the files together form a panel of
+`(price for a season, points scored in that season)` — which is what the model is fitted on. An
+export taken *before* a season starts repeats the previous season's points against new prices;
+`load_panel` detects those and leaves them out of the fit, keeping the pairing honest.
 
 ## Notebooks
 
@@ -69,10 +76,10 @@ KICKER_BENCH_WEIGHT=0.25 uv run pytest       # stop treating the bench as worthl
 KICKER_RESIDUAL_WEIGHT=1.0 uv run pytest     # trust last season fully over the market curve
 ```
 
-`residual_weight` is the one worth knowing about. The projection is
-`curve + residual_weight × (last season − curve)`, so 0 trusts the kicker market values alone and 1
-trusts last season's points alone. It cannot be estimated from a single export, and it changes 5 of
-the top 11 players — `notebooks/projection.py` shows the sensitivity.
+`residual_weight` is normally left unset. The projection is
+`curve + residual_weight × (last season's residual)`, and the weight is **measured** from the
+multi-season panel rather than chosen — it comes out at ~0 for outfield players and ~0.42 for
+goalkeepers. Set it only to explore how the answer moves.
 
 Quotas take JSON, which is how to try a formation other than 4-4-2:
 

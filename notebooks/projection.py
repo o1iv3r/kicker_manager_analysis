@@ -10,17 +10,22 @@ def intro():
 
     mo.md(
         """
-        # The market curve
+        # The market curve, fitted on three seasons
 
-        `notebooks/eda.py` established what the export contains. This notebook builds the
-        baseline projection on top of it and settles three questions:
+        An earlier version of this notebook fitted the curve on a single export and concluded
+        that points per euro *rises* with price, so value lived at the top of the market. That
+        conclusion was an artefact and is retracted below.
 
-        1. What functional form links market value to points?
-        2. Which players should the curve be fitted on — and what breaks if that is got wrong?
-        3. Where does the projection actually pay off, i.e. who is underpriced?
+        The export used carried the 2026/27 prices against the 2025/26 points. A price set after
+        a season already knows how that season went, so regressing one on the other measures how
+        kicker prices the past, not how a price predicts the future. With three seasons of
+        properly paired data the picture changes on every count.
 
-        The finding that matters for the optimizer is at the bottom: **points per euro rises
-        with price**, so the cheap end of the pool is not where value lives.
+        Three questions here:
+
+        1. How much did the mismatched pairing flatter the fit?
+        2. How much of a player's over-performance carries into the next season?
+        3. Given the answer to 2, where is there any edge at all?
         """
     )
     return (mo,)
@@ -34,86 +39,79 @@ def load(mo):
     import polars as pl
 
     from kicker_manager_analysis.config import Settings
-    from kicker_manager_analysis.data import load_latest_players
+    from kicker_manager_analysis.data import load_latest_players, load_panel
     from kicker_manager_analysis.projection import (
-        HAS_HISTORY,
+        fit_and_project,
         fit_market_curve,
-        project,
-        project_latest,
+        season_residuals,
     )
     from kicker_manager_analysis.scoring import Position
 
     settings = Settings(data_dir=Path(__file__).resolve().parents[1] / "data")
-    players = load_latest_players(settings)
-    projected, curve = project_latest(players, settings)
+    panel = load_panel(settings.data_dir)
+    pool = load_latest_players(settings)
+    projected, curve, persistence = fit_and_project(panel, pool, settings)
 
     mo.md(
-        f"Fitted on **{curve.sample_size}** of {players.height} players, excluding "
-        f"{', '.join(curve.excluded_clubs)}. Slope **{curve.points_per_million:.1f}** points "
-        f"per million euros."
+        f"Panel: **{panel.height}** player-seasons over "
+        f"{sorted(panel.get_column('season').unique().to_list())}. Pool to pick from: "
+        f"**{pool.height}** players. Slope **{curve.points_per_million:.1f}** points per million."
     )
     return (
-        HAS_HISTORY,
         Position,
         curve,
         fit_market_curve,
         np,
+        panel,
+        persistence,
         pl,
-        players,
-        project,
+        pool,
         projected,
+        season_residuals,
         settings,
     )
 
 
 @app.cell
-def form_question(mo):
+def pairing_question(mo):
     mo.md("""
-    ## 1. The relationship is linear, not logarithmic
+    ## 1. The mismatched pairing flattered the fit badly
 
-    Points-per-euro problems usually want a concave curve — diminishing returns on price. Here
-    the opposite holds, and it is worth checking rather than assuming.
+    Fit the same functional form two ways: points against the price set *for* that season
+    (forward-looking, what prediction needs), and points against the price set *after* it
+    (retrospective, what the single export gave).
     """)
     return
 
 
 @app.cell
-def form_comparison(curve, np, pl, players):
-    from sklearn.linear_model import LinearRegression
-    from sklearn.model_selection import KFold, cross_val_score
+def pairing_comparison(np, pl, pool, panel):
+    from sklearn.linear_model import LinearRegression as _LinearRegression
 
-    _fit = players.filter(~pl.col("club").is_in(curve.excluded_clubs))
-    _mv = _fit.get_column("market_value").to_numpy().astype(float) / 1e6
-    _y = _fit.get_column("points").to_numpy().astype(float)
-    _pos = _fit.get_column("position").to_numpy()
-    _dummies = np.column_stack([(_pos == p) for p in ["DEFENDER", "MIDFIELDER", "FORWARD"]]).astype(
-        float
-    )
+    from kicker_manager_analysis.scoring import Position as _Position
 
-    _specs = {
-        "market value": _mv[:, None],
-        "log(market value)": np.log(_mv)[:, None],
-        "sqrt(market value)": np.sqrt(_mv)[:, None],
-        "market value + position": np.column_stack([_mv, _dummies]),
-        "per-position slope": np.column_stack([_mv, _dummies, _mv[:, None] * _dummies]),
-    }
+    def _fit(frame):
+        _mv = frame.get_column("market_value").to_numpy().astype(float) / 1e6
+        _y = frame.get_column("points").to_numpy().astype(float)
+        _pos = frame.get_column("position").to_numpy()
+        _d = np.column_stack([(_pos == p.value) for p in _Position]).astype(float)
+        _x = np.column_stack([_mv, _d])
+        _m = _LinearRegression(fit_intercept=False).fit(_x, _y)
+        return _m.score(_x, _y), _m.coef_[0], dict(zip(_Position, _m.coef_[1:], strict=True))
+
+    _forward = _fit(panel)
+    _retro = _fit(pool)
     pl.DataFrame(
         {
-            "specification": list(_specs),
-            "cv_r2": [
-                round(
-                    float(
-                        cross_val_score(
-                            LinearRegression(),
-                            _x,
-                            _y,
-                            cv=KFold(5, shuffle=True, random_state=0),
-                            scoring="r2",
-                        ).mean()
-                    ),
-                    3,
-                )
-                for _x in _specs.values()
+            "pairing": [
+                "forward: points(S) on price(S)",
+                "retrospective: points(S) on price(S+1)",
+            ],
+            "r2": [round(_forward[0], 3), round(_retro[0], 3)],
+            "slope_pts_per_M": [round(_forward[1], 1), round(_retro[1], 1)],
+            "forward_intercept": [
+                round(_forward[2][_Position.FORWARD], 1),
+                round(_retro[2][_Position.FORWARD], 1),
             ],
         }
     )
@@ -121,73 +119,27 @@ def form_comparison(curve, np, pl, players):
 
 
 @app.cell
-def form_conclusion(mo):
+def pairing_conclusion(mo):
     mo.md("""
-    Linear beats log by a wide margin, and adding position intercepts is worth another ~0.03.
-    Letting each position have its own *slope* adds nothing out of sample, so the model keeps
-    one shared slope — which also avoids handing the 24 goalkeepers with history their own
-    poorly determined line.
+    The retrospective fit looks far better and is useless: R² **0.67** against **0.43** on the
+    same specification, and a slope inflated by roughly 40%. (The original Phase 3 fit reached
+    0.75, flattered further by an exclusion the corrected pairing makes unnecessary.) Predicting
+    an unrealised season is simply harder than describing a finished one, and 0.43 is the honest
+    number.
 
-    The linear form with a **negative intercept** is what drives everything downstream: a fixed
-    amount of market value buys no points at all, and only the value above that threshold
-    converts.
+    The retracted claim followed directly from that inflation. The old fit put every position's
+    intercept strongly negative — up to -54 points for a forward — which implied a fixed toll of
+    0.3-1.0M before a player returned anything, and therefore rising efficiency with price. On
+    matched seasons the intercepts sit near zero, so **points per euro is close to flat** and a
+    cheap player is not systematically poor value. What survives is the weaker statement that
+    forwards carry the largest negative intercept, so they convert price to points slightly worse
+    than defenders or midfielders.
+
+    One thing the corrected pairing removes entirely: the single-season fit needed promoted-club
+    players excluded, because their zero meant "was not in this league" rather than "did not
+    play". On matched seasons a promoted club's players did play the season being measured, so
+    every row is a valid observation and the exclusion is gone.
     """)
-    return
-
-
-@app.cell
-def sample_question(mo):
-    mo.md("""
-    ## 2. The fit sample is the part that is easy to get wrong
-
-    A player with zero points and no grade never appeared. That reads as missing data, which
-    argues for dropping those rows. For promoted clubs that is right — they were not in the
-    league. For an established club it is **wrong**: there, not playing is the outcome the
-    curve is supposed to predict.
-
-    Goalkeepers show what the mistake costs, because their pool is mostly backups.
-    """)
-    return
-
-
-@app.cell
-def sample_goalkeepers(HAS_HISTORY, Position, pl, players):
-    players.filter(pl.col("position") == Position.GOALKEEPER.value).with_columns(
-        (pl.col("market_value") // 500_000 * 500_000).alias("price_bucket")
-    ).group_by("price_bucket").agg(
-        pl.len().alias("keepers"),
-        HAS_HISTORY.sum().alias("ever_played"),
-        pl.col("points").mean().round(1).alias("mean_points"),
-    ).sort("price_bucket")
-    return
-
-
-@app.cell
-def sample_comparison(HAS_HISTORY, Position, curve, fit_market_curve, mo, players, settings):
-    _history_only = fit_market_curve(players.filter(HAS_HISTORY), settings)
-    _cheap = 500_000
-
-    def _value_of_a_cheap_keeper(fitted) -> float:
-        _points = fitted.intercepts[Position.GOALKEEPER] + fitted.slope * _cheap
-        return max(0.0, _points) / (_cheap / 1e6)
-
-    mo.md(
-        f"""
-        23 of the 25 goalkeepers priced at 500k never played. Fit on only those who did, and
-        the goalkeeper intercept turns **positive** — the curve then claims a 500k keeper
-        returns {_value_of_a_cheap_keeper(_history_only):.0f} points per million, the best
-        value anywhere in the pool. The optimizer would have bought that keeper every time.
-
-        Keeping the informative zeros gives {_value_of_a_cheap_keeper(curve):.0f} points per
-        million instead, and moves the goalkeeper intercept from
-        **{_history_only.intercepts[Position.GOALKEEPER]:+.1f}** to
-        **{curve.intercepts[Position.GOALKEEPER]:+.1f}**.
-
-        Promoted clubs are identified from the data — the share of each squad with league
-        history — rather than by name, so this keeps working next season. The gap is not close:
-        the three promoted sides sit at 3-6%, every other club above 57%.
-        """
-    )
     return
 
 
@@ -205,38 +157,184 @@ def curve_table(Position, curve, pl):
 
 
 @app.cell
-def curve_reading(mo):
+def persistence_question(mo):
     mo.md("""
-    Read the break-even column as the price of simply being in the squad. A forward has to cost
-    over 1.0M before he is expected to return anything; a goalkeeper only 0.29M, because
-    keepers who play at all accumulate appearance points steadily.
+    ## 2. Outfield over-performance does not carry over at all
 
-    Goalkeepers carry a much wider residual spread (51 against ~38) — their outcome is close to
-    binary, first choice or not, and market value alone does not resolve which.
+    This is the parameter a single export could not identify, and the reason the panel was worth
+    having. Blend weight was previously set to 0.5 by judgement. It can now be measured: regress
+    a player's residual in one season on his residual in the next.
     """)
     return
 
 
 @app.cell
-def efficiency_question(mo):
-    mo.md("""
-    ## 3. Value lives at the top of the market, not the bottom
-
-    This is the result that shapes the optimizer. Because the intercept is negative, points per
-    euro *rises* with price and flattens out — the opposite of the bargain-hunting intuition.
-    """)
-    return
-
-
-@app.cell
-def efficiency_table(Position, curve, pl):
+def persistence_table(Position, persistence, pl):
     pl.DataFrame(
         {
-            "market_value_M": [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 10.0],
+            "position": [p.value for p in Position],
+            "transitions": [persistence.pair_counts[p] for p in Position],
+            "correlation": [round(persistence.correlations[p], 3) for p in Position],
+            "weight_used": [round(persistence.weights[p], 3) for p in Position],
+        }
+    )
+    return
+
+
+@app.cell
+def persistence_context(curve, np, panel, pl, season_residuals):
+    from itertools import pairwise as _pairwise
+
+    _res = season_residuals(panel, curve)
+    _seasons = sorted(_res.get_column("season").unique().to_list())
+    _pairs = pl.concat(
+        panel.filter(pl.col("season") == a)
+        .select("player_id", "position", "market_value", pl.col("points").alias("pts0"))
+        .join(
+            panel.filter(pl.col("season") == b).select("player_id", pl.col("points").alias("pts1")),
+            on="player_id",
+        )
+        .join(
+            _res.filter(pl.col("season") == a).select("player_id", "residual"),
+            on="player_id",
+        )
+        .join(
+            _res.filter(pl.col("season") == b).select(
+                "player_id", pl.col("residual").alias("res1")
+            ),
+            on="player_id",
+        )
+        for a, b in _pairwise(_seasons)
+    ).filter(pl.col("position") != "GOALKEEPER")
+
+    def _corr(a, b):
+        return round(
+            float(
+                np.corrcoef(
+                    _pairs.get_column(a).to_numpy().astype(float),
+                    _pairs.get_column(b).to_numpy().astype(float),
+                )[0, 1]
+            ),
+            3,
+        )
+
+    pl.DataFrame(
+        {
+            "outfield relationship, season S to S+1": [
+                "raw points",
+                "price(S) against points(S+1)",
+                "residual (points net of price)",
+            ],
+            "correlation": [
+                _corr("pts0", "pts1"),
+                _corr("market_value", "pts1"),
+                _corr("residual", "res1"),
+            ],
+            "n": [_pairs.height] * 3,
+        }
+    )
+    return
+
+
+@app.cell
+def persistence_conclusion(mo):
+    mo.md("""
+    Players are consistent — raw points correlate at **+0.59** from one season to the next. But
+    once the price is known, what is left over correlates at **-0.04**. Every outfield position
+    and every price band lands on zero independently, so this is not one thin slice of data.
+
+    Read plainly: **for outfield players the kicker market value already contains everything last
+    season had to say.** A player who beat his price by 100 points is no more likely to beat it
+    again than anyone else. The measured weight is therefore 0, and the projection for an
+    outfield player is simply the curve.
+
+    Goalkeepers are the exception, and a large one at **+0.45**. That is exactly what a
+    step-function outcome produces: a keeper's residual is mostly the persistent fact of being
+    first choice, and first choices stay first choices. Modelling that properly is the next
+    piece of work.
+
+    The blend weight is now measured per position rather than assumed, so
+    `Settings.residual_weight` exists only as an override for exploring how the answer moves.
+    """)
+    return
+
+
+@app.cell
+def club_question(mo):
+    mo.md("""
+    ## 3. The club effect is mean-reverting, so it stays out
+
+    Club dummies lift in-sample R² noticeably, with big clubs coming out negative and mid-table
+    clubs positive. The open question was whether that is a persistent squad-depth effect (deep
+    squads rotate, so their players under-return against price — buy the mid-table club) or last
+    season's over-performance being priced out (avoid it). The two readings invert the
+    recommendation. One season could not separate them; the panel can.
+    """)
+    return
+
+
+@app.cell
+def club_persistence(curve, mo, np, panel, pl, season_residuals):
+    from itertools import pairwise as _pairwise
+
+    from sklearn.linear_model import LinearRegression as _LinearRegression
+
+    _res = season_residuals(panel, curve).join(
+        panel.select("player_id", "season", "club"), on=["player_id", "season"]
+    )
+    _club = _res.group_by("season", "club").agg(pl.col("residual").mean().alias("club_residual"))
+    _seasons = sorted(_club.get_column("season").unique().to_list())
+    _pairs = pl.concat(
+        _club.filter(pl.col("season") == a)
+        .select("club", pl.col("club_residual").alias("current"))
+        .join(
+            _club.filter(pl.col("season") == b).select(
+                "club", pl.col("club_residual").alias("following")
+            ),
+            on="club",
+        )
+        for a, b in _pairwise(_seasons)
+    )
+    _x = _pairs.get_column("current").to_numpy()
+    _y = _pairs.get_column("following").to_numpy()
+
+    mo.md(
+        f"""
+        Across **{_pairs.height}** club transitions the slope is
+        **{float(_LinearRegression().fit(_x[:, None], _y).coef_[0]):+.3f}** and the correlation
+        **{float(np.corrcoef(_x, _y)[0, 1]):+.3f}**.
+
+        Negative. A club whose players beat their prices one season tends to fall *below* them
+        the next — the repricing reading, not the squad-depth one. So the club effect is not a
+        persistent edge and does not belong in the projection; if anything it argues faintly
+        against chasing last season's over-performing club. It stays out, now on evidence rather
+        than caution.
+        """
+    )
+    return
+
+
+@app.cell
+def edge_question(mo):
+    mo.md("""
+    ## 4. Where the edge actually is
+
+    With outfield weights at zero the projection reduces to the curve, and the curve is close to
+    linear through the origin. Points per euro by position, at prices spanning the pool:
+    """)
+    return
+
+
+@app.cell
+def edge_table(Position, curve, pl):
+    _prices = [0.5, 1.0, 2.0, 3.0, 5.0, 10.0]
+    pl.DataFrame(
+        {
+            "market_value_M": _prices,
             **{
                 p.value[:3].lower(): [
                     round(max(0.0, curve.intercepts[p] + curve.slope * v * 1e6) / v, 1)
-                    for v in [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 10.0]
+                    for v in _prices
                 ]
                 for p in Position
             },
@@ -246,125 +344,45 @@ def efficiency_table(Position, curve, pl):
 
 
 @app.cell
-def efficiency_conclusion(mo):
+def edge_top(pl, projected):
+    projected.sort("points_per_million", descending=True).select(
+        "name",
+        "club",
+        "position",
+        "market_value",
+        "market_points",
+        "projected_points",
+        "points_per_million",
+    ).head(12).with_columns(
+        pl.col("market_points").round(1),
+        pl.col("projected_points").round(1),
+        pl.col("points_per_million").round(1),
+    )
+    return
+
+
+@app.cell
+def edge_conclusion(mo):
     mo.md("""
-    A 500k outfield player is projected to return **nothing**. The same euro spent at 3M returns
-    40-45 points per million. That settles a question the plan left open: the four bench slots
-    should be filled with the cheapest bodies available not merely because the bench does not
-    score, but because cheap players are poor value even when they do play.
+    The efficiency table is nearly flat for outfield players — every euro buys roughly the same
+    points wherever it is spent, which is the market doing its job. The only real spread is
+    between positions: forwards convert worst, goalkeepers best.
 
-    It also means the market curve *on its own* gives a degenerate optimum — if points were
-    exactly linear in price, every way of spending the budget would be equally good. So the
-    entire edge sits in the residual.
-    """)
-    return
+    And the value ranking is **entirely goalkeepers**. That is not a quirk of the ranking; it is
+    the one place the model has information the price does not, because the goalkeeper weight is
+    the only non-zero one.
 
+    This has a blunt implication for the optimizer. If outfield projections are just the curve,
+    the choice among outfield players is close to degenerate — the solver will be nearly
+    indifferent between any two ways of spending the same money, and its answer will be decided
+    by small position-intercept differences rather than by real signal. The work that changes the
+    recommended squad is therefore:
 
-@app.cell
-def residual_question(mo):
-    mo.md("""
-    ## 4. How far to trust last season
+    - the goalkeeper model, where a measurable edge exists (next);
+    - appearances, which is the one input that could break the outfield tie.
 
-    `projected = curve + residual_weight x (observed - curve)`. The weight is **not
-    identifiable from one export**: separating a player's persistent over-performance from one
-    season of luck needs a second season, or the appearance counts of Phase 4. The default of
-    0.5 splits the difference; here is what it costs to be wrong.
-    """)
-    return
-
-
-@app.cell
-def residual_sensitivity(np, pl, players, project, settings):
-    from kicker_manager_analysis.projection import fit_market_curve as _fit_curve
-
-    _rows = []
-    _baseline: set[str] = set()
-    for _w in [0.0, 0.25, 0.5, 0.75, 1.0]:
-        _s = settings.model_copy(update={"residual_weight": _w})
-        _p = project(players, _s, _fit_curve(players, _s))
-        _top = _p.sort("projected_points", descending=True).head(11)
-        _names = set(_top.get_column("name"))
-        if _w == 0.0:
-            _baseline = _names
-        _rows.append(
-            {
-                "residual_weight": _w,
-                "top11_points": round(float(_top.get_column("projected_points").sum())),
-                "top11_cost_M": round(float(_top.get_column("market_value").sum()) / 1e6, 1),
-                "shared_with_curve_only": len(_names & _baseline),
-                "spread_of_projections": round(
-                    float(np.std(_p.get_column("projected_points").to_numpy())), 1
-                ),
-            }
-        )
-    pl.DataFrame(_rows)
-    return
-
-
-@app.cell
-def residual_conclusion(mo):
-    mo.md("""
-    This knob matters more than it looks. Only **6 of the 11** best players survive the move
-    from weight 0 to weight 1, and the turnover is systematic rather than random: trusting last
-    season drops expensive Bayern players who cost more than they returned (Musiala, Tah) and
-    pulls in cheap keepers and defenders with large positive residuals (Kobel, Heuer Fernandes,
-    Nicolas, Coufal). The projection spread widens from 55 to 64 points, which is what governs
-    how hard the optimizer chases a cheap outlier.
-
-    Note the two ends are both degenerate in their own way. At weight 0 every player sits
-    exactly on the curve, so any two squads costing the same are equally good and the solve has
-    nothing to choose between them. At weight 1 a single lucky season is taken at face value —
-    precisely the case the optimizer is built to hunt for.
-
-    The top-11 cost falls from 64.2M to 57.1M as the weight rises, but both are far beyond the
-    ~28M actually available, so the budget still binds hard either way.
-
-    Phase 4 replaces this knob with a shrinkage factor estimated from appearances, which is the
-    principled version of the same blend.
-    """)
-    return
-
-
-@app.cell
-def underpriced_question(mo):
-    mo.md("""
-    ## 5. Who the model likes
-
-    Ranking by residual per euro is what the optimizer will effectively do, so it is worth
-    looking at directly before trusting a solve.
-    """)
-    return
-
-
-@app.cell
-def underpriced_table(pl, projected):
-    projected.filter(pl.col("has_history")).with_columns(
-        (pl.col("residual") / pl.col("market_value") * 1e6).alias("residual_per_M")
-    ).sort("residual_per_M", descending=True).select(
-        "name", "club", "position", "market_value", "points", "market_points", "residual_per_M"
-    ).head(15).with_columns(pl.col("market_points").round(0), pl.col("residual_per_M").round(1))
-    return
-
-
-@app.cell
-def underpriced_conclusion(mo):
-    mo.md("""
-    Goalkeepers dominate this list, and that is a warning rather than a recommendation. A keeper
-    priced at 1.0M who scored 150+ was a first choice last season who is priced as a backup
-    now — which usually means the editorial team knows something about the depth chart that the
-    export does not carry. Only one goalkeeper makes the XI, so the exposure is limited, but it
-    is the clearest case where an availability signal is needed.
-
-    Two questions this notebook cannot answer, both carried into Phase 4:
-
-    - **Club effects are large and their sign is ambiguous.** Adding club dummies lifts R² from
-      0.75 to 0.80, with Bayern at -25 and Hoffenheim at +25 points. That is either a
-      persistent squad-rotation effect (deep squads share minutes, so their players
-      under-return against price) or last season's over-performance being priced out — the
-      first says buy Hoffenheim, the second says avoid it. One season cannot separate them, so
-      the club effect is deliberately **left out** of the projection.
-    - **Availability.** Every large positive residual here is a bet that the player keeps his
-      role. That is exactly what `E[appearances]` is for.
+    It is worth stating the negative result plainly rather than burying it: on this evidence
+    there is **no outfield stock-picking edge** available from the export alone.
     """)
     return
 

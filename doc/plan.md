@@ -214,11 +214,53 @@ second season resolves it. *The panel now resolves it — see Phase 3b.*
 **Phase 3b — Refit on the panel, and split goalkeepers out.** *Supersedes the single-season fit
 above.* Three changes, in dependency order.
 
-**(a) Refit the outfield curve on properly paired seasons.** Stack the 2023/24, 2024/25 and 2025/26
-files and fit `points(S) ~ market value(S) + position`, pooled across seasons with a season intercept
-to absorb league-wide scoring drift (season point totals run 36.2k / 32.4k / 32.6k, so the drift is
-real). Then estimate `residual_weight` and the club effect from the year-over-year residual
-regressions described above rather than assuming them.
+**(a) Refit the outfield curve on properly paired seasons.** *Done.* Results:
+
+- **The corrected fit is much weaker and that is the honest number.** R² falls to **0.43** from
+  0.67 on the same specification (0.75 for the original Phase 3 fit, flattered further by an
+  exclusion the corrected pairing makes unnecessary), and the slope from 53.4 to **38.8** points
+  per million. The old fit regressed a season's points on the *next* season's prices, which
+  already knew the outcome; predicting an unrealised season is harder than describing a finished
+  one.
+- **"Points per euro rises with price" is retracted.** It followed from intercepts of −15.8 to
+  −54.4, which the mismatched pairing inflated. On matched seasons they are +9.7 / −1.5 / −3.4 /
+  −11.1 (GK/DEF/MID/FWD), so efficiency is close to **flat** and cheap players are not
+  systematically poor value. What survives is that forwards convert price to points worst.
+- **The cold-start exclusion disappeared.** Excluding promoted clubs was an artefact of the bad
+  pairing: on matched seasons their players did play the season being measured, so every row is a
+  valid observation. `new_clubs` and `new_club_threshold` are gone.
+- **Season effects are negligible** (−0.8 / −1.5 / +2.3 points, centred), but kept so an unseen
+  season prices off an average rather than off whichever season happened to be the base.
+- **`residual_weight` is now measured, not chosen** — see below. It survives in `Settings` only as
+  an override.
+
+**The headline result: there is no outfield stock-picking edge in this data.** Raw points persist
+year over year at +0.59, but the *residual* — what is left after the price — persists at **−0.04**,
+and every outfield position and price band lands on zero independently:
+
+| position | transitions | residual correlation S→S+1 | weight used |
+|---|---|---|---|
+| GOALKEEPER | 70 | **+0.450** | 0.418 |
+| DEFENDER | 190 | −0.083 | 0 |
+| MIDFIELDER | 183 | +0.028 | 0.024 |
+| FORWARD | 92 | −0.077 | 0 |
+
+For outfield players the market value already contains everything last season had to say, so the
+projection reduces to the curve. Goalkeepers are the sole exception, at +0.45 — precisely the
+step-function structure of being first choice, and the reason (b) exists. Negative estimates are
+clamped to zero: at these correlations they are noise, not exploitable mean reversion.
+
+**The club effect is resolved and stays out.** Across 31 club transitions the year-over-year slope
+is **−0.164** (correlation −0.224) — *mean-reverting*. That is the repricing reading, not the
+squad-depth one: a club whose players beat their prices tends to fall below them next season. The
+effect is not a persistent edge, so it does not enter the projection, now on evidence rather than
+caution.
+
+**Consequence for Phase 5.** With outfield weights at zero the outfield choice is close to
+degenerate — the solver will be nearly indifferent between two ways of spending the same money and
+its answer decided by small position-intercept differences. The optimizer is still worth building,
+but the squad it recommends will not be trustworthy until either the goalkeeper model (b) or
+appearances (Phase 4) break the tie.
 
 **(b) Model goalkeepers separately, on within-club price rank.** Goalkeeping is not a line on price,
 it is a step function on *who plays*, because keepers are almost never substituted — a club's number
