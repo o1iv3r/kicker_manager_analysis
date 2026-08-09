@@ -8,9 +8,10 @@ against the 28.0M left after the cheapest legal bench. The problem is therefore 
 *per euro* under the squad rules, not just picking good players.
 
 - `doc/results.md` — what the latest iteration changed, and what it measured
-- `doc/todo.md` — what is left: the optimizer, reporting, and player exclusions
+- `doc/todo.md` — what is left: reporting, the CLI, and the robustness pass
 - `doc/plan.md` — the approach, phase by phase, and what is done so far
-- `doc/heuristic.md` — a hand-built baseline squad, and the number the optimizer has to beat
+- `doc/heuristic.md` — a hand-built baseline squad; superseded by the optimizer, and its numbers
+  predate the current projection
 - `doc/rules.md`, `doc/faq.md` — the game rules this all derives from
 
 ## Setup
@@ -149,10 +150,40 @@ constraint costs, and for testing the optimizer against small pools.)
 | `src/kicker_manager_analysis/data.py` | export discovery, loading, schema and pool validation |
 | `src/kicker_manager_analysis/projection.py` | the market curve, the goalkeeper model and expected season points per player |
 | `src/kicker_manager_analysis/backtest.py` | held-out-season scoring against the baselines the model must beat |
+| `src/kicker_manager_analysis/optimize.py` | the squad integer programme: model build, lexicographic solve, alternatives |
 | `notebooks/` | marimo notebooks |
 | `tests/` | pytest suite, including one test that loads the real committed export |
 | `data/` | date-stamped player exports (CSV) |
 | `data/json/` | per-season API payloads: appearances and the full points decomposition |
 | `data/additional_match_data/` | per-match player rows, 2024/25 only |
 
-Optimization and reporting modules are not built yet; see `doc/plan.md` for what lands where.
+Reporting and the CLI are not built yet; see `doc/plan.md` for what lands where.
+
+## Picking the squad
+
+```bash
+uv run python -c "
+from kicker_manager_analysis.config import Settings
+from kicker_manager_analysis.data import load_latest_players, load_panel
+from kicker_manager_analysis.projection import fit_and_project
+from kicker_manager_analysis.optimize import optimize, squad_frame
+s = Settings()
+projected, _ = fit_and_project(load_panel(s.data_dir), load_latest_players(s), s)
+squad = optimize(projected, s)
+print(squad_frame(projected, squad).select('name', 'club', 'position', 'market_value',
+                                           'projected_points', 'in_lineup'))
+print(squad.lineup_points, squad.cost)"
+```
+
+The solve is exact, not heuristic: CBC maximises the XI's projected points, then minimises what the
+squad costs among the squads that reach that maximum. The second stage is what pins the bench to
+its 2.0M floor — at `bench_weight = 0` every affordable bench scores the same, so without it the
+four fillers come back arbitrary.
+
+`optimize_top_k(projected, settings, k)` returns the `k` best squads, each differing from the others
+in at least one player. **Use it.** On the current pool the ten best squads tie at 1138.781568
+points and 30,000,000 euros — to every digit — while differing in six to nine of their fifteen
+players. That is not a solver artefact: with the measured defender and forward blend weights at
+exactly zero, two defenders at the same price are *identical* to the model, and an XI's points
+reduce to its spend plus the goalkeeper and midfield residuals. What the projection actually
+decides is the goalkeeper, the four midfielders, and that the whole 28.0M reaches the eleven.

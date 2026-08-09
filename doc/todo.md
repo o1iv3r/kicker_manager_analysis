@@ -1,8 +1,8 @@
 # TODO
 
-What is left after the appearance-data iteration (see `doc/results.md`). The projection is done and
-validated; **nothing downstream of it exists yet** — there is no optimizer, no report, and no CLI, so
-the repo cannot currently answer its own question.
+What is left after the appearance-data iteration (see `doc/results.md`) and the optimizer that
+followed it. The projection and the solver are done and validated; **there is still no report and no
+CLI**, so the answer exists but nothing prints it.
 
 Ordered by what blocks what.
 
@@ -45,49 +45,56 @@ implementation guarantees:
 
 ---
 
-## 1. Phase 5 — the optimizer (`optimize.py`)
+## 1. Phase 5 — the optimizer — **done**
 
-The formulation is already settled in `doc/plan.md`; this is implementation. PuLP with CBC is
-already a dependency. Binary `x_p` (in the 15) and `s_p` (in the scoring XI), subject to `s_p ≤ x_p`,
-the squad and lineup quotas, the 30M budget and the 3-per-club cap. 1098 binaries — trivial for CBC.
+Implemented as `optimize.py`: binaries `x_p` and `s_p` with `s_p ≤ x_p`, the squad and lineup
+quotas, the 30M budget and the 3-per-club cap, solved lexicographically (maximise points, then
+minimise cost among the point-optimal squads) and enumerated with no-good cuts. All four tests the
+plan specified are written and pass; see `doc/plan.md` for the details.
 
-Two implementation points decide whether it is correct rather than merely feasible:
+**The answer: 1138.78 projected XI points at exactly 30.00M**, bench at the 2.0M floor so the full
+28.0M funds the XI, keeper Kaua Santos (2.4M, his club's number one) — the cheapest clear number
+one, exactly as the goalkeeper model says to buy.
 
-- **Solve the bench jointly, not afterwards.** A 500k filler still consumes one of his club's three
-  slots, so bench and XI are coupled through the club cap and cannot be chosen separately.
-- **`bench_weight = 0` makes the bench cost-degenerate.** Once the optimal XI leaves any budget
-  slack, *every* affordable bench is equally optimal and CBC may return an arbitrary one. Fix with a
-  lexicographic two-stage solve: maximise XI points to get `P*`, then re-solve minimising total cost
-  subject to `Σ ŷ_p s_p ≥ P* − tol`. That gives the cheapest squad among the point-optimal ones
-  exactly, with no ε-weight to tune.
+Three things worth carrying forward:
 
-Then top-K alternatives via no-good cuts (`Σ_{p ∈ S} x_p ≤ 14` per squad already found), which is
-what makes the Phase 6 robustness pass cheap.
+- **Money must enter the programme in millions.** In euros the cost-minimising second stage never
+  terminates on the real pool; in millions it takes 0.1s. It presents as a hang, not as a wrong
+  answer, which is why it is recorded rather than merely fixed.
+- **The degeneracy is total, not approximate.** The ten best squads tie at 1138.781568 points and
+  30,000,000 euros to every digit while differing in six to nine of fifteen players. With DEF and
+  FWD weights at exactly zero, two defenders at the same price are *identical* to the model. Only
+  the goalkeeper, the four midfielders and spending the full 28.0M are actually decided by the
+  projection.
+- **The number-two goalkeeper needed no explicit constraint**, which the plan left open. The step
+  model already prices him out of the XI.
 
-**Tests (all specified in the plan, none written):**
+**Still open**, and belonging with §2:
 
-- exact correctness on a hand-built ~20-player pool, brute-forced and compared against CBC;
-- every returned squad satisfies all four constraint families on the real pool;
-- **cheapest-bench assertion**: at `bench_weight = 0` the four bench players cost exactly 2.0M. A
-  failure means either the lexicographic stage is missing or the club cap is forcing a dearer filler
-  — both worth surfacing, not absorbing;
-- sanity: with budget and club cap relaxed, the solver reproduces the naive top-scorer XI (54.9M).
+- The Freiburg keeper price tie (see §3) — a projection bug that Phase 5 surfaced.
+- `doc/heuristic.md` is stale. It was written before the JSON panel and the goalkeeper step model,
+  so its "number to beat" of 1128 was computed under a superseded projection; the same fifteen
+  players score **968.2** under the current one, and its headline pick Backhaus is now ranked his
+  club's number two. It has been annotated rather than rewritten, since the reasoning in it is
+  still the right reasoning.
 
 ---
 
 ## 2. Phase 6 — robustness and reporting (`report.py`, `cli.py`)
 
 Because the choice is locked for a whole season, **a single point estimate is the wrong
-deliverable** — and that matters more here than it would normally, because the outfield projection is
-close to degenerate. With residual weights at ~0 the solver is nearly indifferent between ways of
-spending the same money, and its answer is decided by small intercept differences. A squad presented
-as "the" answer would overstate what the model actually knows.
+deliverable** — and Phase 5 turned that from a worry into a measurement. The ten best squads tie to
+every digit on both points and cost while differing in most of their players, so a squad presented
+as "the" answer would not merely overstate what the model knows; it would be one arbitrary draw from
+a set the model cannot rank at all.
 
 So: Monte-Carlo sample `ŷ_p` from its predictive uncertainty, re-solve, and report each player's
 **selection frequency** across draws. Players appearing in nearly every optimal squad are robust
 picks; those appearing rarely are artifacts of one noisy estimate.
 
 - `MarketCurve.residual_sd` already exists per position for exactly this.
+- Cost is not the obstacle: one solve on the real pool takes ~0.25s and `optimize_top_k` about
+  0.3s per squad, so a few hundred draws is a minute or two.
 - **`GoalkeeperModel` has no uncertainty term yet** and needs one, ideally propagating the two
   distinct sources — `P(number one)` (a Bernoulli, the dominant risk) and the points of a number one
   given that he is one. Sampling the keeper from a Normal would misrepresent a bimodal outcome.
@@ -101,6 +108,14 @@ End-to-end check: `uv run python -m kicker_manager_analysis.cli` prints a legal 
 
 ## 3. Carry-over questions
 
+- **A club that prices two keepers identically gets an arbitrary number one.** `with_keeper_rank`
+  breaks ties by row order, and its docstring's claim that such a club "gets near-equal
+  probabilities from the model anyway" is false — rank 1 carries `P = 0.88` and rank 2 `P = 0.08`.
+  Freiburg price Atubolu and Backhaus at 3.2M each, so row order alone puts Atubolu on 182.5
+  projected points and Backhaus on 41.0. It costs nothing this year — the optimum is identical to
+  the digit with Atubolu excluded, because a 2.4M number one is better value than either — and no
+  club-season in the panel has a tied top price, so the fit is clean. Fix by falling back to the
+  previous season's appearances, or by splitting the probability between tied keepers.
 - **Re-check the panel conclusions without 2024/25.** That payload is missing Bochum's and Kiel's
   players entirely (both relegated after it), so it describes a slightly stronger league. Selection
   bias, not data quality — but every persistence estimate pools over it.

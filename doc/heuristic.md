@@ -3,6 +3,17 @@
 A hand-built squad to measure the optimizer against, derived from section 4 of
 `notebooks/projection.py`. Any solver output that cannot beat this is not earning its keep.
 
+> **Superseded, and its numbers are stale.** This was written before the JSON panel and the
+> goalkeeper step model landed, so every projection below comes from a model the repo no longer
+> uses. Under the current projection the same fifteen players score **968.2**, not 1128 — and
+> Backhaus is now ranked Freiburg's *number two*, because the club prices him and Atubolu
+> identically at 3.2M and the rank tie-breaks on row order (see `doc/todo.md` §3). The optimizer
+> lands at **1138.78 XI points at 30.00M** with Kaua Santos in goal.
+>
+> The *reasoning* here still holds and is why the page is kept: spend the maximum on the XI, buy
+> the cheapest clear number one, and accept that everything else is model-indifferent. Phase 5
+> confirmed that last point far more sharply than this page guessed — see below.
+
 ## The rule
 
 - **Goalkeeper: Mio Backhaus.**
@@ -104,9 +115,33 @@ What is *not* arbitrary: the goalkeeper, and spending the full 28.0M on the XI.
 - **Bench players are assumed worthless.** True by design at `bench_weight = 0`, and for the
   reserve keeper it is close to literally true, since keepers are rarely substituted.
 
-## How to use it
+## What the optimizer found
 
-When `optimize.py` lands, this is the number to beat: **1128 XI points at 30.00M**. Given the
-decomposition above, a correct solver should land very close to it and differ mainly by picking
-the same goalkeeper and spending the same 28.0M — if it comes back far higher, suspect a
-constraint is not binding.
+The prediction above was right in shape and understated in degree. `optimize.py` does spend the
+same 28.0M on the XI and does buy a clear number one, and it beats this squad — but the reason the
+outfield names here are placeholders turns out to be exact rather than approximate.
+
+The ten best squads tie at **1138.781568 points and 30,000,000 euros, to every digit**, while
+differing in six to nine of their fifteen players. With defender and forward blend weights measured
+at exactly zero, two defenders at the same price are not merely similar to the model, they are
+*identical*, and the positional counts are fixed by the 4-4-2 — so an XI's points collapse to its
+spend plus the goalkeeper and midfield residuals, exactly as the decomposition above says.
+
+Where the optimizer gains splits cleanly in two, and the split is worth reading carefully because
+the two halves say opposite things about how much the model knows.
+
+**Against this page's own 1128 the margin is +10.8, and all of it is midfield residuals.** The
+optimizer puts the midfield budget on the four midfielders with the largest positive residuals,
+which the 0.024 weight turns into +14.2 points against this squad's +3.6. Under the model this page
+was written against, its goalkeeper carried the same surplus as the optimizer's, so nothing else
+was left to win — which is exactly what "only two decisions matter" predicted.
+
+**Against the same fifteen players re-scored today the margin is +170.6, and almost none of it is
+skill.** It decomposes as +128.9 on the goalkeeper (169.9 for Kaua Santos against 41.0 for
+Backhaus, who is now ranked Freiburg's number two on a price tie), +31.2 from spending the 0.8M
+that cheaper keeper frees on outfield players, and the same +10.6 of midfield residual. The first
+term is a data-and-tie-break artefact rather than a better decision, and it is the largest number
+on this page — which is the honest measure of how much of the answer rests on the goalkeeper rank.
+
+See `doc/plan.md` (Phase 5) for the solve and `doc/todo.md` §2 for why this makes the
+selection-frequency report the deliverable rather than a single squad.

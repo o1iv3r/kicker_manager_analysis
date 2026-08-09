@@ -446,7 +446,8 @@ Availability carries extra weight here because a zero-weighted bench means a mis
 points forgone. It is also where the 27% of the 2026/27 pool with no history is most exposed, and where
 ligainsider's expected-starter and injury signals would enter.
 
-**Phase 5 — Optimizer.** Binary `x_p` (in the 15) and `s_p` (in the scoring XI) per player:
+**Phase 5 — Optimizer.** *Done — `optimize.py`, asserted in `tests/test_optimize.py`.* Binary
+`x_p` (in the 15) and `s_p` (in the scoring XI) per player:
 
 ```
 maximise   Σ_p  ŷ_p · ( s_p + λ · (x_p − s_p) )          λ = bench_weight, default 0
@@ -471,6 +472,35 @@ Two implementation points that decide whether "cheapest bench" actually holds:
 
 Top-K alternative squads via no-good cuts (`Σ_{p ∈ S} x_p ≤ 14` for each squad `S` already found),
 which is what makes the robustness pass cheap.
+
+**What the implementation found.** Both formulation points held, and a third appeared:
+
+- **Money must enter the programme in millions, not euros.** In euros the first stage still solves
+  in 0.1s but the second never terminates — a cost objective of ~3·10⁷ against points coefficients
+  of ~10² leaves CBC unable to close the gap. In millions the same solve takes 0.1s. This is the
+  same conditioning failure the curve fit hit against its position dummies, and it is worth
+  recording because it presents as a hang rather than as a wrong answer.
+- **The lexicographic stage does what it was added for.** The bench comes back at exactly 2.0M, so
+  the full 28.0M reaches the XI. Without the second stage CBC returned an arbitrary affordable
+  bench.
+- **The number-two goalkeeper needs no explicit constraint.** The step model prices a deputy at a
+  tenth of a number one, so the solver never fields one; the reserve keeper it buys is a 500k
+  deputy, which is the intended reading of the bench.
+
+**The answer on the 2026/27 pool: 1138.78 projected XI points at exactly 30.00M**, 28.0M of it in
+the XI, keeper Kaua Santos (Eintracht Frankfurt, 2.4M, rank 1) — the cheapest clear number one,
+exactly as Phase 3b predicted.
+
+**The degeneracy is total, not approximate.** The ten best squads tie at 1138.781568 points and
+30,000,000 euros, to every digit, while differing in six to nine of their fifteen players. This
+follows from the model rather than from the solver: with DEF and FWD blend weights measured at
+exactly zero, an XI's points are `Σ (position intercepts) + slope × (XI spend)` plus goalkeeper and
+midfield residuals, and the positional counts are fixed by the 4-4-2. Two defenders at the same
+price are therefore *identical* to the model, not merely similar. What is actually decided by the
+projection is the goalkeeper, the four midfielders, and spending the full 28.0M; everything else is
+free choice on football knowledge the data does not hold. This is the strongest argument yet for
+the Phase 6 selection-frequency report — a single squad presented as "the" answer would be
+indefensible.
 
 **Phase 6 — Robustness and reporting.** Because the choice is locked for a season, a single point
 estimate is the wrong deliverable. Monte-Carlo sample `ŷ_p` from its predictive uncertainty, re-solve,
@@ -514,15 +544,22 @@ emits the recommended XI plus the four fillers, with cost, projected points, and
   club-seasons. Measured at **44 of 49 (90%)** after sentinel filtering; the test asserts above 80%,
   and that rank 1 averages over 25 appearances against under 8 for rank 2. If this regresses toward
   chance the step-function model is wrong and should be dropped rather than tuned.
-- **Optimizer correctness is testable exactly** — on a hand-built pool of ~20 players the optimum can be
-  enumerated by brute force and compared against CBC's answer. Also assert on the real pool that every
-  returned squad satisfies all four constraint families (squad quotas, XI quotas, 30M budget,
-  3-per-club).
-- **Cheapest-bench assertion:** at λ=0 the four bench players must cost 2.0M in total, i.e. the bound
-  above is met and not merely approached. A failure here means the lexicographic stage is missing or the
-  club cap is forcing a more expensive filler — both worth surfacing explicitly rather than absorbing.
+- **Optimizer correctness is testable exactly** — *done, `test_matches_brute_force_on_a_small_pool`.*
+  On a hand-built pool of 20 players all 864 quota-satisfying squads are enumerated, filtered on the
+  budget and the club cap, and scored under the same lexicographic rule; the test also asserts the
+  optimum is *unique* before comparing, since a tie would make the comparison vacuous. CBC returns
+  the same fifteen players. Every returned squad on the real pool satisfies all four constraint
+  families (squad quotas, XI quotas, 30M budget, 3-per-club).
+- **Cheapest-bench assertion:** *done, `test_real_pool_bench_costs_the_theoretical_minimum`.* At λ=0
+  the four bench players cost 2.0M in total, so the bound is met and not merely approached, and the
+  remaining 28.0M all reaches the XI. A failure here means the lexicographic stage is missing or the
+  club cap is forcing a more expensive filler — both worth surfacing rather than absorbing. The
+  floor is recomputed from the pool rather than hard-coded, so a pool without 500k players in every
+  position fails loudly instead of silently changing the target.
 - Sanity: with the club cap and budget relaxed, the solver must reproduce the naive top-scorer XI
   (cost 54.9M) — a direct check that the objective and positional quotas are wired correctly.
+  *Done, `test_relaxed_constraints_reproduce_the_naive_top_scorer_xi`: scored on last season's
+  points the relaxed solve returns exactly the per-position top scorers, at exactly 54.9M.*
 - End-to-end: `uv run python -m kicker_manager_analysis.cli` prints a legal 15-player squad within 30M
   with the XI marked.
 
@@ -549,6 +586,16 @@ emits the recommended XI plus the four fillers, with cost, projected points, and
   who kicker priced as the number one, not who the coach picks after a summer signing. The rank model
   is now measured at 90% accuracy on history (above), but that is the in-league case; ligainsider's
   expected-starter signal remains the direct observation for a keeper new to the pool.
+- **A club that prices two keepers identically gets an arbitrary number one.** Surfaced by Phase 5.
+  `with_keeper_rank` breaks ties by row order, and its docstring claims such a club "gets near-equal
+  probabilities from the model anyway" — which is false: rank 1 carries `P = 0.88` and rank 2
+  `P = 0.08`. In the 2026/27 pool this happens once, at Freiburg, where Atubolu and Backhaus are
+  both priced 3.2M; row order makes Atubolu the number one at 182.5 projected points and Backhaus
+  the deputy at 41.0, a 141-point swing decided by nothing. It does **not** move this year's answer
+  (Kaua Santos at 2.4M is bought either way, and the optimum is identical to the digit with Atubolu
+  excluded), and no club-season in the panel has a tied top price, so the fit is unaffected. But it
+  is luck that the exposure is nil, and the right fix is to fall back to the previous season's
+  appearances — or to split the probability between the tied keepers — rather than to row order.
 - ~~**How much of the 2026 pool is genuinely new**~~ — measured against the JSON history: of 549
   players, **356 appear in 2025/26, 403 in at least one of the three seasons, and 146 (27%) in none**.
   The newcomers split 53 DEF / 49 MID / 33 FWD / 11 GK, median value 1.4M, and only 16 exceed 2M — so
