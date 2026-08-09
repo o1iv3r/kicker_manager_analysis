@@ -37,9 +37,16 @@ implementation guarantees:
 
 **Still open on this feature**, both small and both belonging with the CLI in §2:
 
-- The promoted-deputy projection is an **extrapolation**. The first-choice branch is
-  `174.5 + 6.8 × M`, fitted on number ones priced 1.5–4.3M; a promoted 1.0M deputy projects 161
-  points from below that range. Worth flagging in the report, or clipping, rather than trusting.
+- The promoted-deputy projection is an **extrapolation**, and Phase 5 has now seen it bite rather
+  than merely predicted it. The first-choice branch is `174.5 + 6.8 × M`, fitted on number ones
+  priced 1.5–4.3M; a promoted 1.0M deputy projects 161 points from below that range. Concretely:
+  excluding the four cheapest rank-1 keepers promotes Markus Schubert — Paderborn's 800k number two,
+  zero points last season — to rank 1, where he projects **159.4 points at a surplus of +128**,
+  better than any real keeper in the pool, and the optimizer duly buys him for an XI of 1190.59
+  against the true optimum of 1138.78. **A worse squad that scores higher is the failure mode to
+  engineer against**, so this is no longer cosmetic: clip the first-choice branch to its fitted
+  price range, or refuse to promote a deputy who has never held the shirt, rather than flagging it
+  in the report. See `doc/squad.md` for the worked case.
 - The report must **state what was excluded**, so a saved run is self-describing; and a `--exclude`
   flag that unions with the setting would save exporting an environment variable for a one-off.
 
@@ -54,7 +61,8 @@ plan specified are written and pass; see `doc/plan.md` for the details.
 
 **The answer: 1138.78 projected XI points at exactly 30.00M**, bench at the 2.0M floor so the full
 28.0M funds the XI, keeper Kaua Santos (2.4M, his club's number one) — the cheapest clear number
-one, exactly as the goalkeeper model says to buy.
+one, exactly as the goalkeeper model says to buy. Written up in `doc/squad.md`, which also records
+which five of the fifteen names the model actually chooses.
 
 Three things worth carrying forward:
 
@@ -121,7 +129,13 @@ End-to-end check: `uv run python -m kicker_manager_analysis.cli` prints a legal 
   bias, not data quality — but every persistence estimate pools over it.
 - **Goalkeeper availability beyond price rank.** Rank is kicker's pricing opinion, not the coach's
   team sheet; it is a 90% proxy, not an observation. ligainsider's expected-starter signal is the
-  direct measurement, and matters most for a keeper new to the league.
+  direct measurement, and matters most for a keeper new to the league. **Phase 5 shows this is now
+  the binding weakness of the whole model**, because the flat first-choice price branch makes the
+  *cheapest* rank-1 keeper win, and cheap rank-1 keepers are cheap precisely because they are
+  unproven. The four keepers the projection likes best have 13, 0, 0 and 2 appearances last season
+  between them; the ones with 30–34 sit 5–10 surplus points behind. Since this slot carries the
+  model's entire edge, using prior appearances here — as a tie-break among rank-1 keepers, not as a
+  multiplicative term — is the highest-value item left on this list.
 - **The 27% cold-start cohort.** 146 of 549 pool players have no appearance history in any of the
   three seasons. Mostly cheap (median 1.4M, only 16 above 2M), so the optimizer has little reason to
   buy them — but that should be *checked* after the optimizer exists rather than assumed.
