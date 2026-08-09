@@ -50,7 +50,8 @@ def load(mo):
     settings = Settings(data_dir=Path(__file__).resolve().parents[1] / "data")
     panel = load_panel(settings.data_dir)
     pool = load_latest_players(settings)
-    projected, curve, persistence = fit_and_project(panel, pool, settings)
+    projected, model = fit_and_project(panel, pool, settings)
+    curve, goalkeepers, persistence = model.curve, model.goalkeepers, model.persistence
 
     mo.md(
         f"Panel: **{panel.height}** player-seasons over "
@@ -61,6 +62,7 @@ def load(mo):
         Position,
         curve,
         fit_market_curve,
+        goalkeepers,
         np,
         panel,
         persistence,
@@ -182,10 +184,10 @@ def persistence_table(Position, persistence, pl):
 
 
 @app.cell
-def persistence_context(curve, np, panel, pl, season_residuals):
+def persistence_context(curve, goalkeepers, np, panel, pl, season_residuals):
     from itertools import pairwise as _pairwise
 
-    _res = season_residuals(panel, curve)
+    _res = season_residuals(panel, curve, goalkeepers)
     _seasons = sorted(_res.get_column("season").unique().to_list())
     _pairs = pl.concat(
         panel.filter(pl.col("season") == a)
@@ -274,12 +276,12 @@ def club_question(mo):
 
 
 @app.cell
-def club_persistence(curve, mo, np, panel, pl, season_residuals):
+def club_persistence(curve, goalkeepers, mo, np, panel, pl, season_residuals):
     from itertools import pairwise as _pairwise
 
     from sklearn.linear_model import LinearRegression as _LinearRegression
 
-    _res = season_residuals(panel, curve).join(
+    _res = season_residuals(panel, curve, goalkeepers).join(
         panel.select("player_id", "season", "club"), on=["player_id", "season"]
     )
     _club = _res.group_by("season", "club").agg(pl.col("residual").mean().alias("club_residual"))

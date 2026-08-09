@@ -6,19 +6,28 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from conftest import REPO_ROOT, build_rows, export_row, write_export
+from conftest import (
+    REPO_ROOT,
+    build_rows,
+    build_season_players,
+    export_row,
+    season_player,
+    write_export,
+    write_season,
+)
 from kicker_manager_analysis.config import Settings
 from kicker_manager_analysis.data import (
     MAX_PLAUSIBLE_MARKET_VALUE,
     UNPURCHASABLE_MARKET_VALUE,
     all_exports,
     export_date,
-    export_season,
-    is_repriced_repeat,
     latest_export,
     load_panel,
     load_players,
+    load_season,
     minimum_squad_cost,
+    season_files,
+    season_of,
     validate_pool,
 )
 from kicker_manager_analysis.scoring import Position
@@ -160,8 +169,6 @@ def test_real_export_loads_and_validates() -> None:
 def test_export_date_accepts_a_year_only_stamp(tmp_path: Path) -> None:
     """The historical exports carry only a year, and must not be rejected as unparseable."""
     assert export_date(tmp_path / "2023_spieler_daten.csv") == date(2023, 1, 1)
-    assert export_season(tmp_path / "2023_spieler_daten.csv") == 2023
-    assert export_season(tmp_path / "2026_08_09_spieler_daten.csv") == 2026
 
 
 def test_all_exports_orders_mixed_stamp_forms(tmp_path: Path) -> None:
@@ -195,51 +202,94 @@ def test_load_players_rejects_an_unrecognised_sentinel(tmp_path: Path) -> None:
         load_players(write_export(tmp_path, "2026_08_09", rows))
 
 
-def test_is_repriced_repeat_separates_a_new_season_from_a_repricing(tmp_path: Path) -> None:
-    """An export taken before kickoff repeats the finished season's points against new prices."""
-    played = [
-        export_row(n, f"Club {n % 6}", "MIDFIELDER", 1_000_000, points=10 * n, grade_average=3.0)
-        for n in range(10)
-    ]
-    repriced = [
-        export_row(n, f"Club {n % 6}", "MIDFIELDER", 2_000_000, points=10 * n, grade_average=3.0)
-        for n in range(10)
-    ]
-    next_season = [
-        export_row(n, f"Club {n % 6}", "MIDFIELDER", 2_000_000, points=7 * n + 3, grade_average=2.8)
-        for n in range(10)
-    ]
-    first = load_players(write_export(tmp_path, "2024", played))
-    assert is_repriced_repeat(load_players(write_export(tmp_path, "2025", repriced)), first)
-    assert not is_repriced_repeat(load_players(write_export(tmp_path, "2026", next_season)), first)
+def test_season_of_reads_the_year(tmp_path: Path) -> None:
+    """A payload is keyed by the season in its filename."""
+    assert season_of(tmp_path / "2023.json") == 2023
+    with pytest.raises(ValueError, match="is not a"):
+        season_of(tmp_path / "2023_08_09.json")
 
 
-def test_load_panel_excludes_a_repricing_and_labels_seasons(tmp_path: Path) -> None:
-    """Only exports whose points describe their own season may be trained on."""
-    season_a = [
-        export_row(n, f"Club {n % 6}", "MIDFIELDER", 1_000_000, points=10 * n, grade_average=3.0)
-        for n in range(10)
-    ]
-    season_b = [
-        export_row(n, f"Club {n % 6}", "MIDFIELDER", 1_500_000, points=4 * n + 9, grade_average=2.5)
-        for n in range(10)
-    ]
-    repriced_b = [
-        export_row(n, f"Club {n % 6}", "MIDFIELDER", 2_000_000, points=4 * n + 9, grade_average=2.5)
-        for n in range(10)
-    ]
-    write_export(tmp_path, "2024", season_a)
-    write_export(tmp_path, "2025", season_b)
-    write_export(tmp_path, "2026_08_09", repriced_b)
+def test_season_files_orders_by_season(tmp_path: Path) -> None:
+    """Payloads are discovered under ``json/`` and returned oldest first."""
+    for season in (2025, 2023, 2024):
+        write_season(tmp_path, season, build_season_players())
+    assert [path.stem for path in season_files(tmp_path)] == ["2023", "2024", "2025"]
 
+
+def test_season_files_requires_a_payload(tmp_path: Path) -> None:
+    """An empty data directory must say so rather than yield an empty panel."""
+    with pytest.raises(FileNotFoundError, match=r"no YYYY\.json"):
+        season_files(tmp_path)
+
+
+def test_load_season_derives_appearances(tmp_path: Path) -> None:
+    """Appearances are starts plus substitute appearances, the denominator the CSV lacks."""
+    players = [
+        *build_season_players(),
+        season_player(90, "tm-0", "MIDFIELDER", 1_000_000, starts=12, subs=5, grade_points=8),
+    ]
+    season = load_season(write_season(tmp_path, 2024, players))
+    row = season.filter(pl.col("player_id") == "pl-k00090").row(0, named=True)
+    assert (row["starts"], row["sub_appearances"], row["appearances"]) == (12, 5, 17)
+    assert row["points"] == 4 * 12 + 2 * 5 + 8
+    assert season.get_column("season").unique().to_list() == [2024]
+
+
+def test_load_season_rejects_a_broken_decomposition(tmp_path: Path) -> None:
+    """If the channels do not sum to the total, the appearance counts cannot be trusted."""
+    broken = season_player(90, "tm-0", "MIDFIELDER", 1_000_000, starts=10)
+    broken["rating"] = 999
+    with pytest.raises(ValueError, match="channels sum to"):
+        load_season(write_season(tmp_path, 2024, [*build_season_players(), broken]))
+
+
+def test_load_season_rejects_more_appearances_than_matchdays(tmp_path: Path) -> None:
+    """A player cannot feature more often than the season has rounds."""
+    too_many = season_player(90, "tm-0", "MIDFIELDER", 1_000_000, starts=30, subs=8)
+    with pytest.raises(ValueError, match="more than the 34 matchdays"):
+        load_season(write_season(tmp_path, 2024, [*build_season_players(), too_many]))
+
+
+def test_load_season_drops_the_unpurchasable_sentinel(tmp_path: Path) -> None:
+    """The sentinel is filtered from the panel exactly as it is from the pool."""
+    unbuyable = season_player(90, "tm-0", "FORWARD", UNPURCHASABLE_MARKET_VALUE)
+    season = load_season(write_season(tmp_path, 2024, [*build_season_players(), unbuyable]))
+    assert season.height == 25
+    assert season.get_column("market_value").to_numpy().max() <= MAX_PLAUSIBLE_MARKET_VALUE
+
+
+def test_load_panel_stacks_every_season(tmp_path: Path) -> None:
+    """Each payload pairs a season's prices with that same season's points, so all of them fit."""
+    write_season(tmp_path, 2024, build_season_players())
+    write_season(tmp_path, 2025, build_season_players(market_value=1_500_000))
     panel = load_panel(tmp_path)
     assert panel.get_column("season").unique().sort().to_list() == [2024, 2025]
-    assert panel.height == 20
+    assert panel.height == 50
 
 
 def test_real_panel_covers_three_seasons() -> None:
-    """The committed exports yield three usable seasons; the 2026 file is a repricing."""
+    """The committed payloads yield three seasons of correctly paired prices and points."""
     panel = load_panel(REPO_ROOT / "data")
     assert panel.get_column("season").unique().sort().to_list() == [2023, 2024, 2025]
     assert panel.height == 1380
     assert panel.get_column("market_value").to_numpy().max() <= MAX_PLAUSIBLE_MARKET_VALUE
+    assert panel.get_column("appearances").to_numpy().max() <= 34
+
+
+def test_real_panel_reconciles_with_the_csv_exports() -> None:
+    """The two sources must agree exactly, or they describe different seasons.
+
+    Cheap to check and strong: the payloads are only usable as the fitting sample because they
+    carry the same prices and points the CSVs do. Drift here means one of them was re-exported.
+    """
+    panel = load_panel(REPO_ROOT / "data")
+    for season in (2023, 2024, 2025):
+        csv = load_players(REPO_ROOT / "data" / f"{season}_spieler_daten.csv")
+        merged = panel.filter(pl.col("season") == season).join(
+            csv, on="player_id", suffix="_csv", how="inner"
+        )
+        assert merged.height == csv.height
+        for column in ("market_value", "points", "grade_average"):
+            assert merged.get_column(column).equals(
+                merged.get_column(f"{column}_csv"), check_names=False
+            ), f"{season}: {column} differs between the payload and the export"

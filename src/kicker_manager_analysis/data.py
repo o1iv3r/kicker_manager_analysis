@@ -1,22 +1,26 @@
-"""Loading and validation of the kicker player-data export.
+"""Loading and validation of the kicker player data.
 
-The export is downloaded manually from the Transfermarkt page of the kicker-Managerspiel and
-saved to ``data/`` under a ``YYYY_MM_DD_spieler_daten.csv`` name; the historical files carry only
-a year. Keeping the stamp lets a run be reproduced against the exact pool it used, so the loader
-resolves the newest file rather than a fixed path.
+Two sources, serving two purposes that must not be confused.
 
-The exports serve two distinct purposes and must not be confused.
-:func:`load_latest_players` gives the **pool to pick from** — the squads and prices of the season
-being played. :func:`load_panel` gives the **fitting sample**, every export whose points describe
-its own season, which is not all of them: an export taken before kickoff reports the season just
-finished against the prices of the season to come. See :func:`is_repriced_repeat`.
+:func:`load_latest_players` gives the **pool to pick from**, and comes from the CSV downloaded
+manually from the Transfermarkt page of the kicker-Managerspiel, saved to ``data/`` under a
+``YYYY_MM_DD_spieler_daten.csv`` name. Keeping the stamp lets a run be reproduced against the exact
+pool it used, so the loader resolves the newest file rather than a fixed path.
+
+:func:`load_panel` gives the **fitting sample**, and comes from the game's own API payloads under
+``data/json/``, one file per completed season. Those carry the same players, prices and points as
+the CSVs — the reconciliation is exact, and asserted in the tests — but they additionally break each
+season total down into its counts, of which **appearances** is the one the model could not otherwise
+obtain. A season's payload pairs the price a player carried with the points he went on to score in
+that same season, so unlike the CSVs there is no repricing hazard to detect.
 """
 
+import json
 import re
 from datetime import date
 from math import ceil
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import polars as pl
 
@@ -40,12 +44,11 @@ is a colossal leverage point on any regression through market value, and it sile
 within-club price rank — the statistic the goalkeeper model rests on.
 """
 
-REPEAT_SHARE_THRESHOLD: Final = 0.9
-"""Share of shared point totals above which an export is a repricing, not a new season.
+SEASON_DIR_NAME: Final = "json"
+"""Subdirectory of the data directory holding the per-season API payloads."""
 
-The gap is wide enough that the exact cut does not matter: the 2026 export repeats 356 of 356
-overlapping players, while real transitions repeat 10 of 290 and 25 of 286.
-"""
+SEASON_FILENAME_PATTERN: Final = re.compile(r"^(\d{4})\.json$")
+"""``YYYY.json``, the year being the season the payload describes."""
 
 MAX_PLAUSIBLE_MARKET_VALUE: Final = 20_000_000
 """Ceiling a real price cannot reach, given a 30M budget for fifteen players.
@@ -67,6 +70,23 @@ COLUMN_MAPPING: Final[dict[str, str]] = {
 
 POSITION_DTYPE: Final = pl.Enum([position.value for position in Position])
 
+BREAKDOWN_COMPONENTS: Final = (
+    "ratingGrade",
+    "ratingGoals",
+    "ratingCards",
+    "ratingAssists",
+    "ratingStarter",
+    "ratingMvp",
+    "ratingCleanSheet",
+    "ratingJoker",
+)
+"""The eight scoring channels a season total decomposes into.
+
+They must sum to ``ratingSum``, which must in turn equal the player's ``rating``. This holds for
+every row of every payload today; a violation would mean the breakdown and the total describe
+different things, and the appearance counts taken from that breakdown could not be trusted.
+"""
+
 
 def export_date(path: Path) -> date:
     """Parse the date stamp out of an export filename.
@@ -87,21 +107,6 @@ def export_date(path: Path) -> date:
         raise ValueError(f"{path.name!r} is not a YYYY[_MM_DD]_spieler_daten.csv export")
     year, month, day = match.groups()
     return date(int(year), int(month or 1), int(day or 1))
-
-
-def export_season(path: Path) -> int:
-    """Return the season an export belongs to, as its leading year.
-
-    Args:
-        path: Path to an export.
-
-    Returns:
-        The year in the filename, which keys the season the squads were assembled for.
-
-    Raises:
-        ValueError: If the filename does not carry a parseable date stamp.
-    """
-    return export_date(path).year
 
 
 def latest_export(data_dir: Path) -> Path:
@@ -296,62 +301,155 @@ def all_exports(data_dir: Path) -> list[Path]:
     return sorted(exports, key=export_date)
 
 
-def is_repriced_repeat(newer: pl.DataFrame, older: pl.DataFrame) -> bool:
-    """Report whether an export repeats the previous season's results against new prices.
-
-    An export downloaded before a season starts carries the squads and prices of the season to
-    come but the *points of the season just finished* — the same points the previous export
-    already reported. Training on such a file pairs one season's prices with another season's
-    results, which silently estimates the wrong quantity, so it has to be detected rather than
-    assumed away. Genuine season-to-season transitions share 3-9% of point totals; a repeat
-    shares essentially all of them.
+def season_files(data_dir: Path) -> list[Path]:
+    """Return every per-season payload under ``data_dir``, oldest first.
 
     Args:
-        newer: Canonical frame from the later export.
-        older: Canonical frame from the export immediately before it.
+        data_dir: Directory holding the exports; the payloads live in its ``json`` subdirectory.
 
     Returns:
-        True if the overlapping players carry the same points and grades in both.
+        Payload paths in season order.
+
+    Raises:
+        FileNotFoundError: If the subdirectory holds no parseable payload.
     """
-    overlap = newer.join(older, on="player_id", suffix="_previous")
-    if overlap.is_empty():
-        return False
-    identical = overlap.filter(
-        (pl.col("points") == pl.col("points_previous"))
-        & (pl.col("grade_average") == pl.col("grade_average_previous"))
-    ).height
-    return identical / overlap.height >= REPEAT_SHARE_THRESHOLD
+    season_dir = data_dir / SEASON_DIR_NAME
+    payloads = sorted(
+        path for path in season_dir.glob("*.json") if SEASON_FILENAME_PATTERN.match(path.name)
+    )
+    if not payloads:
+        raise FileNotFoundError(f"no YYYY.json season payload found in {season_dir}")
+    return payloads
+
+
+def load_season(path: Path) -> pl.DataFrame:
+    """Read one season payload into the canonical player frame.
+
+    Args:
+        path: Path to a ``YYYY.json`` payload.
+
+    Returns:
+        The canonical player columns plus ``season``, ``starts``, ``sub_appearances`` and
+        ``appearances``. Players carrying the :data:`UNPURCHASABLE_MARKET_VALUE` sentinel are
+        dropped, as in :func:`load_players`; they could not be bought that season, and the
+        appearance data confirms it — 71 of the 72 such rows never featured.
+
+    Raises:
+        ValueError: If the payload is missing a section, a player's points do not equal the sum
+            of the scoring channels they decompose into, a position is unknown, or a player is
+            credited with more appearances than the season has matchdays.
+    """
+    payload: dict[str, Any] = json.loads(path.read_text(encoding="utf8"))
+
+    missing = [section for section in ("players", "teams", "rounds") if section not in payload]
+    if missing:
+        raise ValueError(f"{path.name} is missing expected sections: {missing}")
+
+    club_names = {team["id"]: team["name"] for team in payload["teams"]}
+    matchdays = len(payload["rounds"])
+
+    records = []
+    for player in payload["players"]:
+        breakdown = player["ratingBreakDown"]
+        components = sum(breakdown[channel] for channel in BREAKDOWN_COMPONENTS)
+        if components != breakdown["ratingSum"] or breakdown["ratingSum"] != player["rating"]:
+            raise ValueError(
+                f"{path.name}: {player['id']} scores {player['rating']} but its channels sum to "
+                f"{components}; the breakdown and the total describe different things"
+            )
+        records.append(
+            {
+                "player_id": player["id"],
+                "name": player["displayLongName"],
+                "club": club_names[player["teamId"]],
+                "position": player["position"],
+                "market_value": player["marketValue"],
+                "points": player["rating"],
+                "grade_average": breakdown["averageGrade"] / 100,
+                "starts": breakdown["starter"],
+                "sub_appearances": breakdown["joker"],
+            }
+        )
+
+    players = pl.DataFrame(records)
+    unknown = set(players.get_column("position").unique()) - {
+        position.value for position in Position
+    }
+    if unknown:
+        raise ValueError(f"{path.name} contains unknown positions: {sorted(unknown)}")
+
+    players = (
+        players.with_columns(
+            pl.col("position").cast(POSITION_DTYPE),
+            pl.col("market_value").cast(pl.Int64),
+            pl.col("points").cast(pl.Int64),
+            pl.col("grade_average").cast(pl.Float64),
+            pl.lit(season_of(path), dtype=pl.Int32).alias("season"),
+            (pl.col("starts") + pl.col("sub_appearances")).alias("appearances"),
+        )
+        .filter(pl.col("market_value") != UNPURCHASABLE_MARKET_VALUE)
+        .select(
+            "player_id",
+            "name",
+            "club",
+            "position",
+            "market_value",
+            "points",
+            "grade_average",
+            "season",
+            "starts",
+            "sub_appearances",
+            "appearances",
+        )
+    )
+
+    over_played = players.filter(pl.col("appearances") > matchdays)
+    if over_played.height:
+        raise ValueError(
+            f"{path.name} credits {over_played.height} players with more than the {matchdays} "
+            f"matchdays the season holds"
+        )
+
+    _reject_invalid_rows(players, path.name)
+    return players
+
+
+def season_of(path: Path) -> int:
+    """Return the season a payload describes, as the year in its filename.
+
+    Args:
+        path: Path to a ``YYYY.json`` payload.
+
+    Returns:
+        The season the squads were assembled for and the points were scored in.
+
+    Raises:
+        ValueError: If the filename is not a bare four-digit year.
+    """
+    match = SEASON_FILENAME_PATTERN.match(path.name)
+    if match is None:
+        raise ValueError(f"{path.name!r} is not a YYYY.json season payload")
+    return int(match.group(1))
 
 
 def load_panel(data_dir: Path) -> pl.DataFrame:
-    """Load every export whose points describe its own season, stacked into one frame.
+    """Load every completed season into one frame.
 
     This is the fitting sample: each row pairs the price a player carried for a season with the
-    points he went on to score *in that same season*. Exports that merely reprice the previous
-    season's results are dropped, as are the market values that never applied.
+    points he went on to score *in that same season*, and adds the appearances behind that total.
 
     Args:
-        data_dir: Directory holding the exports.
+        data_dir: Directory holding the exports; the payloads live in its ``json`` subdirectory.
 
     Returns:
-        The canonical player columns plus ``season``, the year the squads were assembled for.
+        The canonical player columns plus ``season``, ``starts``, ``sub_appearances`` and
+        ``appearances``.
 
     Raises:
-        FileNotFoundError: If the directory holds no parseable export.
-        ValueError: If no export survives as a usable season.
+        FileNotFoundError: If no season payload is present.
+        ValueError: If a payload fails validation.
     """
-    frames = [(path, load_players(path)) for path in all_exports(data_dir)]
-    seasons = [
-        (path, frame)
-        for index, (path, frame) in enumerate(frames)
-        if index == 0 or not is_repriced_repeat(frame, frames[index - 1][1])
-    ]
-    if not seasons:
-        raise ValueError(f"no export in {data_dir} carries results for its own season")
-    return pl.concat(
-        frame.with_columns(pl.lit(export_season(path), dtype=pl.Int32).alias("season"))
-        for path, frame in seasons
-    )
+    return pl.concat(load_season(path) for path in season_files(data_dir))
 
 
 def load_latest_players(settings: Settings) -> pl.DataFrame:

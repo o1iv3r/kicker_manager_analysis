@@ -78,6 +78,39 @@ price list bolted onto the 2025/26 results.
 That yields three seasons of correctly paired `(price for season S, points scored in season S)` —
 2023/24, 2024/25, 2025/26 — plus the 2026/27 prices to predict against.
 
+### The JSON exports carry appearances and the full points decomposition
+
+`data/json/{2023,2024,2025}.json` are the game's own API payloads for the same three seasons, keyed by
+the same stable `ID`. They reconcile against the CSVs exactly — same row counts (488/487/477), and for
+every player `marketValue`, `rating` and `averageGrade/100` are byte-equal to `Marktwert`, `Punkte` and
+`Notendurchschnitt`. **This is the same data universe, not a second source to be aligned.**
+
+What they add is `ratingBreakDown`, which decomposes each player's season total into its scoring
+components and, critically, its **counts**:
+
+| field | meaning |
+|---|---|
+| `starter` / `joker` | matches started / came on as a substitute — **appearances = their sum** |
+| `goals`, `assists`, `mvp`, `cleanSheet` | event counts |
+| `cardsYellowRed`, `cardsRed` | disciplinary counts |
+| `averageGrade` | mean kicker grade ×100 (`0` still means never graded) |
+| `rating*` | each count already converted to points |
+
+The decomposition is exact: `ratingSum` equals the sum of its eight `rating*` components and equals
+`rating` (= `Punkte`) for all 1452 rows across the three files, with no exceptions. Appearances are
+bounded by the 34-match season in every row, and no player has points without appearances or
+appearances without points.
+
+Note that `ratingGrade` is computed over *graded* appearances, which is fewer than `starter + joker` —
+short substitute cameos go ungraded. This is why Phase 2's attempt to invert the points formula for an
+appearance count failed on top of the singularity at grade 4.5: it was solving for the wrong count. The
+JSON supplies the real one directly, so the inversion is moot.
+
+The files also carry `teams`, `rounds` (34) and `matches` (306), but the matches are **fixtures only** —
+ids, teams and kickoff dates, no lineups or results. Per-matchday appearance data is therefore *not*
+in the JSON; `data/additional_match_data/2425_player_raw_match_data.csv` remains the only per-match
+source, and only for 2024/25.
+
 ### This invalidates how Phase 3 fitted the curve
 
 Phase 3 regressed the 2026 file's `Punkte` on its `Marktwert`, i.e. **2025/26 points on 2026/27
@@ -92,8 +125,11 @@ Phase 3 below (slope 53.8, the intercepts, the break-even values) is provisional
 
 60 rows in the 2024 file and 12 in the 2025 file carry a market value of **999,000,000**, all with
 essentially zero points; the 2023 and 2026 files have none. It marks a player who cannot be bought
-(unregistered, long-term injured, or arrived after pricing). Current validation only rejects
-non-positive values, so these pass straight through, and they are not cosmetic:
+(unregistered, long-term injured, or arrived after pricing). The appearance data confirms this
+reading rather than inferring it from points: **71 of the 72 sentinel rows have zero appearances**,
+and the one exception is a single substitute appearance worth 2 points. They did not play.
+Current validation only rejects non-positive values, so these pass straight through, and they are
+not cosmetic:
 
 - a 999M player with 0 points is a colossal leverage point that drags the fitted slope toward zero;
 - it silently corrupts **within-club price rank**, which the goalkeeper model below depends on — it
@@ -104,18 +140,16 @@ affected players must drop out of both fit and pool: they were genuinely unavail
 
 ### The filename convention now has two forms
 
-`2023_spieler_daten.csv` does not match the existing `YYYY_MM_DD` pattern, so the loader currently
-rejects the three historical files outright. It also needs to stop assuming one export: `latest_export`
-still gives the pool to *pick from*, but fitting now consumes every season file.
+`2023_spieler_daten.csv` does not match the `YYYY_MM_DD` pattern, so the loader accepts both — the
+leading year is the season key either way. *Resolved:* `latest_export` gives the pool to pick from,
+while fitting reads the JSON payloads instead, keyed by their own `YYYY.json` names. The CSV panel
+loader and its repricing detector are gone; with a payload per completed season there is no
+mismatched pairing left to detect.
 
-**What is missing is the denominator.** The export has season point *totals* but no appearances, so
-`Punkte ÷ Spiele` — the statistic named in the request — cannot be computed from this file alone.
-Phase 2 confirmed this is not recoverable by arithmetic either: grade points are linear, so
-`points = 4·starts + 2·subs + n·f(mean grade) + extras`, and inverting it fails outright. At a grade
-of 4.5 the per-appearance rate is `4 − 4 = 0`, so the points total carries *no* information about how
-often the player featured; below 4.5 the implied count goes negative, and goals/assists/bonuses bias
-it upward besides. A quarter of graded players imply more than a 34-match season. Appearances must be
-ingested externally. Two further gaps:
+**The denominator is no longer missing** — the JSON supplies it for all three seasons, so
+`Punkte ÷ Einsätze` is directly computable and Phase 4 no longer blocks on scraping. What remains
+missing is appearances for the **2026/27 pool itself**, which is unknowable in advance and is exactly
+what the projection has to estimate. Two further gaps:
 
 - **224 of 549 players (41%) have 0 points**, and Phase 2 EDA shows the cohort is dominated by the
   three promoted clubs — Paderborn 97%, Elversberg 96%, Schalke 94% — which contribute 89 of the 224.
@@ -127,9 +161,12 @@ ingested externally. Two further gaps:
   it, and feeding it to the scoring formula would imply `(3.5 − 0) × 4 = +14` points per appearance,
   better than a perfect 1.0. The projection must mask it rather than treat the column as numeric.
 
-Appearance data must therefore be ingested separately, from kicker.de player pages (same data universe,
-so grades and points reconcile against the export — preferred), with openligadb as a cross-check and
-ligainsider for expected-starter and injury signals. Scraped pulls get cached to `data/` under the same
+The scraping plan is therefore reduced, not cancelled. kicker.de player pages and openligadb are no
+longer needed — the JSON *is* the kicker data, already reconciled. What no historical file can supply
+is a forward-looking availability signal for the pool we actually buy from: **146 of the 549 players
+in the 2026/27 pool (27%) have no appearance history in any of the three seasons**, median value 1.4M
+and 16 of them above 2M. For those, ligainsider's expected-starter and injury signals remain the only
+observation, and that is now the sole scraping case. Any such pull gets cached to `data/` under the
 date-stamped convention so runs stay reproducible.
 
 ### What the panel now makes measurable
@@ -161,9 +198,10 @@ Flat module set under `src/kicker_manager_analysis/` — no subpackages, per the
 | Module | Responsibility |
 |---|---|
 | `config.py` | `pydantic-settings` `Settings`: budget, squad/formation quotas, club cap, `bench_weight`, data dir |
-| `data.py` | Polars load of one export or the whole multi-season panel, schema validation, sentinel rejection, canonical `Player` frame; optional appearance join |
+| `data.py` | Polars load of the CSV pool and the JSON season panel, schema validation, sentinel rejection, canonical `Player` frame with appearances and event counts |
 | `scoring.py` | kicker scoring rules as pure functions (grade→points, goal points by position) — used to sanity-check `Punkte` and to decompose it |
 | `projection.py` | expected season points per player: the outfield market curve, the separate goalkeeper model, and the panel-estimated shrinkage |
+| `backtest.py` | hold one season out, refit, and score the projection against the two baselines |
 | `optimize.py` | PuLP/CBC ILP: model build, lexicographic solve, top-K enumeration |
 | `report.py` | XI + bench table, cost/points breakdown, selection-frequency summary |
 | `cli.py` | argparse entry point running load → project → optimize → report |
@@ -250,6 +288,28 @@ projection reduces to the curve. Goalkeepers are the sole exception, at +0.45 �
 step-function structure of being first choice, and the reason (b) exists. Negative estimates are
 clamped to zero: at these correlations they are noise, not exploitable mean reversion.
 
+**The appearance data narrows that claim.** Decomposing the same residual — points = appearances ×
+points per appearance, each residualised on the same price curve — shows the two factors behave
+completely differently:
+
+| position | n | residual **points** | residual **appearances** | residual **rate** |
+|---|---|---|---|---|
+| GOALKEEPER | 70 | +0.450 | **+0.573** | +0.163 |
+| DEFENDER | 190 | −0.083 | **+0.168** | −0.039 |
+| MIDFIELDER | 183 | +0.028 | **+0.349** | −0.028 |
+| FORWARD | 92 | −0.077 | **+0.445** | +0.011 |
+
+So "no edge" is really **no edge *in rate***. How well a player performs per appearance is, after
+price, unpredictable at every position — the rate residual is zero everywhere, goalkeepers included.
+But **how often he plays is persistently predictable beyond his price** (+0.31 for outfield players
+pooled, stable at +0.29/+0.32 when restricted to players with 5 or 10 appearances in both seasons).
+Out of sample, prior appearances lift the prediction of next season's appearances from R² 0.32
+(price alone) to **0.41**.
+
+This also reinterprets the goalkeeper result. The +0.45 points residual is *not* keepers being more
+readable as players — their rate residual is +0.163, no better than anyone's. It is entirely the
+appearance channel at +0.573, i.e. the number-one/number-two step function that (b) models.
+
 **The club effect is resolved and stays out.** Across 31 club transitions the year-over-year slope
 is **−0.164** (correlation −0.224) — *mean-reverting*. That is the repricing reading, not the
 squad-depth one: a club whose players beat their prices tends to fall below them next season. The
@@ -262,17 +322,25 @@ its answer decided by small position-intercept differences. The optimizer is sti
 but the squad it recommends will not be trustworthy until either the goalkeeper model (b) or
 appearances (Phase 4) break the tie.
 
-**(b) Model goalkeepers separately, on within-club price rank.** Goalkeeping is not a line on price,
+**(b) Model goalkeepers separately, on within-club price rank.** *Done — `GoalkeeperModel` in
+`projection.py`.* Goalkeeping is not a line on price,
 it is a step function on *who plays*, because keepers are almost never substituted — a club's number
 one plays ~34 matches and his deputy plays ~0. Mean points by within-club price rank:
 
-| season | rank 1 | rank 2 | rank 3 |
-|---|---|---|---|
-| 2023/24 | **179.1** | 17.6 | 13.2 |
-| 2025/26 | **156.9** | 45.4 | 4.7 |
+Recomputed on all three seasons with the sentinel filtered out (2024/25 is no longer omitted, and the
+appearance columns are the direct evidence for the step function rather than a proxy for it):
 
-(2024/25 omitted: its ranks are corrupted by the 999M sentinel and must be recomputed after the
-loader filters it.)
+| season | rank 1 pts | rank 2 | rank 3 | rank 1 **apps** | rank 2 | rank 3 |
+|---|---|---|---|---|---|---|
+| 2023/24 | **179.1** | 19.6 | 6.0 | **27.3** | 3.2 | 1.0 |
+| 2024/25 | **185.1** | 36.8 | 12.3 | **27.7** | 5.9 | 1.9 |
+| 2025/26 | **186.1** | 17.8 | 18.2 | **28.9** | 3.1 | 2.5 |
+
+The mechanism is now visible rather than inferred: the number one plays ~28 of 34 matches and the
+deputy plays ~3-6. **The plan's verification criterion passes decisively** — across 49 club-seasons,
+the highest-priced keeper is both the most-appearing and the top-scoring keeper at his club in
+**44 of 49 (90%)**. Rank-1 keepers fall below 17 appearances in only 6 of 49 club-seasons, so the
+downside case is rare but real and is what the projection's `P(number one)` term should price.
 
 The gap is an order of magnitude, and it is **rank** that carries it, not absolute price. This
 explains the Phase 3 goalkeeper anomaly properly: fitting GK points on absolute market value
@@ -289,33 +357,94 @@ Consequences for the model:
 - The optimizer should be discouraged from buying a club's number two at any price. Worth checking
   whether this needs an explicit constraint or falls out of the projection.
 
-One caveat on the stated mechanism. The intuition was that a *clear price gap* to the next keeper
-signals a settled number one, and a narrow gap signals a contest. Measured on the sentinel-corrupted
-data, 47 of 53 club-seasons already show a gap of 2x or more, so the gap rarely discriminates and the
-six "narrow gap" cases actually scored *higher* (171 vs 137) — but n=6 and the ranks were corrupted,
-so this is not yet a real result. **Recompute after (a) and (b) land**; if the gap turns out not to
-matter, rank alone is the model and the practical rule is simply "buy a club's number one, never his
-deputy".
+As implemented, the model is `P(number one | rank) x (points of a number one)` with the deputy
+branch carrying the small remainder. Fitted on all three seasons it gives:
 
-**(c) Fix the zero-point treatment for new signings.** Deferred earlier by choice; the panel now
-resolves most of it without scraping. A player's presence in the previous season's file *is* the
-per-player league-registration flag that was missing, so the three-way split becomes available
-directly: played / was registered but did not play / was not in the league. That removes the
-inconsistency where a newcomer at a promoted club got the full market prior while a newcomer at an
-established club was penalised as a known non-player.
+| quantity | value |
+|---|---|
+| P(≥17 appearances \| rank 1) | **0.86** |
+| P(≥17 appearances \| rank 2) | 0.06 |
+| P(≥17 appearances \| rank 3+) | 0.02 |
+| points of a number one | 174.5 + 6.8 × M |
+| points of a deputy | 11.9 |
 
-**Phase 4 — Per-appearance refinement.** Once appearances are ingested, decompose:
+**The price term is the striking part: it is nothing.** Across the 49 number ones in the panel,
+points correlate with price at **−0.03**. The cheapest number one of each season scored 257, 261
+and 230; the dearest scored 208, 213 and 254. So the practical rule is not "buy a good keeper" but
+**buy the cheapest keeper who is clearly his club's number one** — the rank buys the points and the
+extra millions buy nothing. On the 2026/27 pool that is a 2.4M keeper at ~70 points per million
+against ~53 for the 3.6M alternative.
+
+The rank-gap idea is dropped. The intuition was that a clear price gap to the next keeper signals a
+settled number one; recomputed on sentinel-filtered ranks the probabilities above already separate
+rank 1 from rank 2 by an order of magnitude, so the gap has nothing left to explain. Rank alone is
+the model.
+
+Fitting the step explicitly also **absorbs half the goalkeeper residual persistence**, which falls
+from +0.45 to +0.24 once residuals are taken against the step model rather than the curve. That is
+the sense in which the old blend weight was a proxy for this model; the remaining +0.24 stays as a
+measured weight.
+
+**(c) Fix the zero-point treatment for new signings.** *Done — `Registration` in `projection.py`.*
+A player's presence in the previous season's file *is* the per-player league-registration flag that
+was missing, and the appearance count splits that presence in two, so the projection now labels
+every player in the pool as one of:
+
+- `PLAYED` — in the league and featured, so his residual is a real observation (309 of the pool);
+- `REGISTERED` — in the league and never featured, which counts against him, because he was
+  available and was not picked (37);
+- `ABSENT` — not in the league at all, left on the model's prior rather than penalised with an
+  implicit zero he did not earn (203).
+
+That removes the inconsistency where a newcomer at a promoted club got the full market prior while a
+newcomer at an established club was penalised as a known non-player.
+
+**Phase 4 — Per-appearance refinement.** *Unblocked by the JSON, but the naive form does not yet pay.*
+The intended decomposition is:
 
 ```
 E[season points] = E[appearances] × E[points per appearance]
 ```
 
-Estimate points-per-appearance from the prior season and **shrink it toward the position mean** in
-proportion to sample size (empirical-Bayes / James–Stein). This matters: without shrinkage a player
-with three lucky matches outranks a proven regular, and the optimizer — which hunts for cheap outliers —
-will select precisely those noise-driven cases. Availability (`E[appearances]`) is the dominant variance
-term and is where ligainsider's expected-starter and injury signals enter. It carries extra weight here
-because a zero-weighted bench means a missed match is simply points forgone.
+with points-per-appearance estimated from the prior season and **shrunk toward the position mean** in
+proportion to sample size (empirical-Bayes / James–Stein), so that a player with three lucky matches
+does not outrank a proven regular — precisely the noise-driven cases the optimizer hunts for.
+
+**Tested and not shipped: the decomposition does not reliably beat the curve.** Cross-fitted over both
+seasons that can be predicted at all — each held out in turn, the model refitted on the other two, and
+the rate shrunk all the way to its price prediction as suggested below:
+
+| model | RMSE | R² | XI points, 24/25 | XI points, 25/26 |
+|---|---|---|---|---|
+| curve only (Phase 3b) | 51.4 | +0.472 | 1025 | 825 |
+| **curve + GK rank model** | **50.1** | **+0.498** | **1262** | **938** |
+| decomposed `E[app] × E[rate]` | 53.3 | +0.433 | 973 | 1355 |
+| decomposed + GK rank model | 51.5 | +0.471 | 1093 | 1170 |
+
+"XI points" is the decision-relevant loss suggested below — the *realised* points of the XI a
+30M/3-per-club optimizer picks from each projection, against 2448 and 2672 for perfect foresight.
+
+Reading it honestly: **the goalkeeper model is a clear win and ships** — better on RMSE, on R², and on
+the squad metric in both seasons. **The decomposition is not** — better on the squad metric on average
+but worse in one of the two seasons and worse on RMSE, which with n=2 is noise rather than evidence.
+Availability is genuinely more predictable than points (prior appearances lift appearance R² from 0.32
+to 0.41), but that predictability still does not survive multiplication by a rate whose residual is
+zero. It stays out of the projection until a fourth season can adjudicate.
+
+What remains worth trying, in order of expected value:
+
+1. **Availability as a constraint, not a term.** Rather than scaling the projection, forbid the
+   optimizer from fielding a player whose predicted appearances fall below a floor. That uses the
+   signal where it is strong (ranking who plays) without letting it multiply into the points estimate.
+2. **Shrink per player, not per position.** The rate was shrunk fully to its price prediction here;
+   an empirical-Bayes weight that varies with each player's appearance count is the version the phase
+   originally proposed and has not been tried.
+3. **Wait for 2026/27.** A third transition roughly halves the standard error on every persistence
+   estimate above, and is free.
+
+Availability carries extra weight here because a zero-weighted bench means a missed match is simply
+points forgone. It is also where the 27% of the 2026/27 pool with no history is most exposed, and where
+ligainsider's expected-starter and injury signals would enter.
 
 **Phase 5 — Optimizer.** Binary `x_p` (in the 15) and `s_p` (in the scoring XI) per player:
 
@@ -358,13 +487,33 @@ emits the recommended XI plus the four fillers, with cost, projected points, and
   2024 and 12 in 2025 that currently pass validation unnoticed. Assert no surviving market value
   exceeds a sane ceiling, and assert the goalkeeper price ranks recomputed after filtering no longer
   show a club-season with a mean top-keeper value in the hundreds of millions.
-- **Out-of-sample validation is now possible and should be the headline check.** Fit on 2023/24 and
-  2024/25, predict 2025/26, and compare against the two baselines that matter: predicting from market
-  value alone, and predicting last season's points forward. A model that does not beat both is not
-  earning its complexity. This replaces the in-sample cross-validation Phase 3 relied on.
-- **Goalkeeper model:** assert that within-club price rank 1 predicts the season's top-scoring keeper
-  at that club in a clear majority of club-seasons, and that the rank-1/rank-2 points gap survives
-  sentinel filtering. If it does not, the step-function model is wrong and should be dropped.
+- **Out-of-sample validation is the headline check.** *Done — `backtest.py`, asserted in
+  `tests/test_backtest.py`.* Each season with a predecessor is held out in turn, the model refitted
+  from scratch on the rest, and scored against the two baselines that matter. The model must beat both
+  in **every** held-out season rather than on average — with only two of them, an average can hide a
+  reversal:
+
+  | held out | projection | market value alone | last season's points |
+  |---|---|---|---|
+  | 2024/25 | **50.5** | 50.9 | 57.8 |
+  | 2025/26 | **53.4** | 55.4 | 64.7 |
+
+  (RMSE over the 280 and 255 players with a previous season.) The margin over the price alone is thin
+  and comes almost entirely from the goalkeeper model — which is the honest reading of Phase 3b: for
+  outfield players the projection essentially *is* the price.
+- **JSON/CSV reconciliation is a cheap, strong invariant** — *done, `test_real_panel_reconciles_with_
+  the_csv_exports`.* For every shared `ID`, `marketValue`, `rating` and `averageGrade/100` must equal
+  `Marktwert`, `Punkte` and `Notendurchschnitt`. It holds exactly today, so any future drift means one
+  of the two sources was re-exported for a different season.
+- **The points decomposition must close** — *done, enforced in the loader itself rather than a test:*
+  `ratingSum` equals the sum of its eight `rating*` components and equals `rating`, and appearances
+  never exceed the payload's own round count. A violation means the breakdown and the total describe
+  different things, and the appearance counts drawn from it could not be trusted.
+- **Goalkeeper model** — *done, `test_real_panel_number_one_keepers_dominate`.* Within-club price rank
+  1 must be both the most-appearing and the top-scoring keeper at his club in a clear majority of
+  club-seasons. Measured at **44 of 49 (90%)** after sentinel filtering; the test asserts above 80%,
+  and that rank 1 averages over 25 appearances against under 8 for rank 2. If this regresses toward
+  chance the step-function model is wrong and should be dropped rather than tuned.
 - **Optimizer correctness is testable exactly** — on a hand-built pool of ~20 players the optimum can be
   enumerated by brute force and compared against CBC's answer. Also assert on the real pool that every
   returned squad satisfies all four constraint families (squad quotas, XI quotas, 30M budget,
@@ -386,15 +535,24 @@ emits the recommended XI plus the four fillers, with cost, projected points, and
   repeats the 2025 file's results against new prices. See the data table above.
 - ~~Whether the club effect is persistent or mean-reverting~~ — no longer an open question in
   principle, just work: the panel answers it by regressing club residuals year over year (Phase 3b).
-- Whether kicker.de player pages expose appearances in a stable, scrapeable form; if not, Phase 4 falls
-  back to openligadb lineups.
-- **Why the 2024 file holds only 16 clubs** where the Bundesliga has 18, and whether that export is
-  otherwise complete. It also carries by far the most sentinel rows (60). Until this is understood,
-  treat 2024/25 as the least trustworthy of the three seasons and check whether conclusions hold
-  without it.
+- ~~Whether kicker.de player pages expose appearances in a stable, scrapeable form~~ — moot. The JSON
+  exports carry appearances for all three seasons directly; no scraping is needed for history.
+- ~~**Why the 2024 file holds only 16 clubs**~~ — resolved by the JSON. That file's `teams` list holds
+  all **18** clubs and its 306 `matches` reference all 18, but **VfL Bochum and Holstein Kiel have zero
+  player rows**. Both were relegated after 2024/25, so the export was taken once their squads had been
+  dropped from the game. The file is otherwise complete — indeed its 16 clubs carry *fuller* rosters
+  than the other seasons (30.4 players per club against 27.1 and 26.5). The consequence is a
+  **selection bias, not a data-quality one**: 2024/25 is missing the players of exactly the two worst
+  clubs, so any statistic pooled over that season is computed on a slightly stronger league. Worth
+  re-checking the panel conclusions with 2024/25 dropped.
 - **Goalkeeper availability beyond price rank.** Rank is measured *within the export*, so it tells us
-  who kicker priced as the number one, not who the coach picks after a summer signing. ligainsider's
-  expected-starter signal remains the direct observation; the rank model is a strong proxy for it.
-- **How much of the 2026 pool is genuinely new.** 549 players against 477 the season before, and 224
-  zero-point rows. The three-way registration split in Phase 3b(c) should be checked against the
-  previous file rather than assumed.
+  who kicker priced as the number one, not who the coach picks after a summer signing. The rank model
+  is now measured at 90% accuracy on history (above), but that is the in-league case; ligainsider's
+  expected-starter signal remains the direct observation for a keeper new to the pool.
+- ~~**How much of the 2026 pool is genuinely new**~~ — measured against the JSON history: of 549
+  players, **356 appear in 2025/26, 403 in at least one of the three seasons, and 146 (27%) in none**.
+  The newcomers split 53 DEF / 49 MID / 33 FWD / 11 GK, median value 1.4M, and only 16 exceed 2M — so
+  the cold-start cohort is real but concentrated in cheap players the optimizer has little reason to
+  buy. The three-way registration split in Phase 3b(c) is now directly constructible: appearances > 0
+  (played), appearances = 0 while present in that season's file (registered, did not play), absent
+  from the file (not in the league).

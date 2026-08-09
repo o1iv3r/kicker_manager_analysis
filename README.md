@@ -36,6 +36,23 @@ while its points give the season just finished, so the files together form a pan
 export taken *before* a season starts repeats the previous season's points against new prices;
 `load_panel` detects those and leaves them out of the fit, keeping the pairing honest.
 
+### Appearances
+
+`data/json/{2023,2024,2025}.json` are the game's own API payloads for the same three seasons. They
+reconcile against the CSVs exactly — same players, same prices, same points — but each player also
+carries a `ratingBreakDown` that splits his season total into counts: `starter` and `joker`
+(**appearances = their sum**), goals, assists, clean sheets, player-of-the-match awards and cards,
+each alongside the points it contributed.
+
+This is the denominator the CSV lacks, and it is what makes `points ÷ appearances` computable. It
+matters because the two factors behave differently: after price, how *well* a player performs per
+appearance is unpredictable year over year at every position, while how *often* he plays persists.
+See `doc/plan.md` for the measured numbers and for the out-of-sample test that this decomposition
+still has to win.
+
+The JSON also carries fixtures (`matches`, `rounds`), but without lineups or results — per-matchday
+data exists only in `data/additional_match_data/`, and only for 2024/25.
+
 ## Notebooks
 
 Exploratory work uses [marimo](https://marimo.io), not Jupyter.
@@ -78,9 +95,16 @@ KICKER_RESIDUAL_WEIGHT=1.0 uv run pytest     # trust last season fully over the 
 ```
 
 `residual_weight` is normally left unset. The projection is
-`curve + residual_weight × (last season's residual)`, and the weight is **measured** from the
-multi-season panel rather than chosen — it comes out at ~0 for outfield players and ~0.42 for
+`baseline + residual_weight × (last season's residual)`, and the weight is **measured** from the
+multi-season panel rather than chosen — it comes out at ~0 for outfield players and ~0.24 for
 goalkeepers. Set it only to explore how the answer moves.
+
+The baseline is the market curve for outfield players, but **goalkeepers get their own model**.
+Keeping is a step function on who plays rather than a line on price: a club's most expensive keeper
+plays 27.9 matches a season and his deputy 4.0, so the projection is
+`P(number one | within-club price rank) × points of a number one`. Among the 49 number ones in the
+panel, points correlate with price at −0.03 — so the rule is to buy the *cheapest* clear number one,
+not the best keeper.
 
 Quotas take JSON, which is how to try a formation other than 4-4-2:
 
@@ -100,9 +124,12 @@ constraint costs, and for testing the optimizer against small pools.)
 | `src/kicker_manager_analysis/scoring.py` | the kicker scoring rules and the `Position` enum |
 | `src/kicker_manager_analysis/config.py` | `Settings`: budget, quotas, club cap, bench weight |
 | `src/kicker_manager_analysis/data.py` | export discovery, loading, schema and pool validation |
-| `src/kicker_manager_analysis/projection.py` | the market curve and expected season points per player |
+| `src/kicker_manager_analysis/projection.py` | the market curve, the goalkeeper model and expected season points per player |
+| `src/kicker_manager_analysis/backtest.py` | held-out-season scoring against the baselines the model must beat |
 | `notebooks/` | marimo notebooks |
 | `tests/` | pytest suite, including one test that loads the real committed export |
-| `data/` | date-stamped player exports |
+| `data/` | date-stamped player exports (CSV) |
+| `data/json/` | per-season API payloads: appearances and the full points decomposition |
+| `data/additional_match_data/` | per-match player rows, 2024/25 only |
 
 Optimization and reporting modules are not built yet; see `doc/plan.md` for what lands where.
